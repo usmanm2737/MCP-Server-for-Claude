@@ -1,0 +1,28 @@
+node_modules/
+dist/
+coverage/
+*.log
+npm-debug.log*
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local data (database files, imports, backups)
+data/
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Local MCP client config (may contain machine-specific paths)
+.mcp.json
+
+# Editor/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

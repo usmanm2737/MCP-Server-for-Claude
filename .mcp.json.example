@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "claude-activity-memory": {
+      "command": "node",
+      "args": ["dist/index.js"],
+      "cwd": "/absolute/path/to/claude-activity-memory",
+      "env": {
+        "CLAUDE_MEMORY_DB_PATH": "/absolute/path/to/claude-activity-memory/data/memory.db"
+      }
+    }
+  }
+}

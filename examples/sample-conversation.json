@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "title": "Picking a storage engine for the memory server",
+  "sessionId": "example-session-001",
+  "source": "claude-web-import",
+  "startedAt": "2026-03-01T09:00:00.000Z",
+  "endedAt": "2026-03-01T09:12:00.000Z",
+  "messages": [
+    {
+      "role": "user",
+      "content": "We need local persistent storage for an MCP server. Should we use better-sqlite3 or something else?",
+      "timestamp": "2026-03-01T09:00:00.000Z"
+    },
+    {
+      "role": "assistant",
+      "content": "Since the target Node.js version is 22.13+, the built-in node:sqlite module (DatabaseSync) is a solid option — it supports FTS5, requires no native build step, and avoids an extra dependency. better-sqlite3 is more mature and has a nicer transaction() API, but node:sqlite is enough for a single-process local tool.",
+      "timestamp": "2026-03-01T09:03:00.000Z"
+    },
+    {
+      "role": "user",
+      "content": "Let's go with node:sqlite then, and hand-roll the transaction helper.",
+      "timestamp": "2026-03-01T09:10:00.000Z"
+    },
+    {
+      "role": "assistant",
+      "content": "Agreed. I'll wrap BEGIN IMMEDIATE / COMMIT / ROLLBACK in a small helper on the database client, with reentrancy support so a repository method's own transaction can join a caller's outer transaction instead of erroring on a nested BEGIN.",
+      "timestamp": "2026-03-01T09:12:00.000Z"
+    }
+  ]
+}
