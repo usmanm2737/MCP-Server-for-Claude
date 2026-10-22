@@ -113,7 +113,7 @@ export class ImportService {
     }
   }
 
-  importConversation(input: ImportConversationInput): ImportResult {
+  async importConversation(input: ImportConversationInput): Promise<ImportResult> {
     const { rawText, format, sourceReference } = this.readSource(input);
     const adapter = this.adapters[format];
 
@@ -128,10 +128,10 @@ export class ImportService {
       );
     }
 
-    return this.db.transaction(() => {
-      const project = this.projects.getOrCreate(input.projectName);
+    return this.db.transaction(async () => {
+      const project = await this.projects.getOrCreate(input.projectName);
 
-      const session = this.sessions.getOrCreateByExternalId({
+      const session = await this.sessions.getOrCreateByExternalId({
         projectId: project.id,
         source: parsed.session.source,
         externalSessionId: parsed.session.externalSessionId ?? null,
@@ -152,7 +152,7 @@ export class ImportService {
       // exact same inline content twice would mint a new session each time and never
       // be recognized as a duplicate, defeating idempotency.
       const stableSessionAnchor = parsed.session.externalSessionId ?? sourceReference ?? '';
-      parsed.records.forEach((record, index) => {
+      for (const [index, record] of parsed.records.entries()) {
         const hash = contentHash([
           project.id,
           stableSessionAnchor,
@@ -161,12 +161,12 @@ export class ImportService {
           record.content,
         ]);
 
-        if (this.activities.findByContentHash(project.id, hash)) {
+        if (await this.activities.findByContentHash(project.id, hash)) {
           skippedDuplicates++;
-          return;
+          continue;
         }
 
-        const activity = this.activities.create({
+        const activity = await this.activities.create({
           projectId: project.id,
           sessionId: session.id,
           source: parsed.session.source,
@@ -180,7 +180,7 @@ export class ImportService {
         });
         created++;
         activityIds.push(activity.id);
-      });
+      }
 
       return { sessionId: session.id, created, skippedDuplicates, rejected, activityIds };
     });

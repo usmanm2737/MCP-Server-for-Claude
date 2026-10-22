@@ -15,8 +15,9 @@ import { TaskService } from './services/task-service.js';
 
 /**
  * Composition root: wires repositories and services over one open database.
- * Built once by the stdio/HTTP entrypoints; tests build their own over an
- * in-memory database via `buildContainerFromDb`.
+ * Built once by the stdio/REST/remote-MCP entrypoints; tests build their own
+ * via `buildContainerFromDb` over a shared real Postgres `MemoryDatabase`
+ * (there's no "in-memory" mode for Postgres — see `tests/helpers.ts`).
  */
 export interface Container {
   db: MemoryDatabase;
@@ -52,7 +53,7 @@ export function buildContainerFromDb(db: MemoryDatabase, config: AppConfig): Con
     activities,
     decisions,
     taskService,
-    config.dbPath,
+    config.databaseDisplayName,
     () => db.schemaVersion(),
   );
   const contextService = new ContextService(projects, activities, decisions, taskService);
@@ -74,12 +75,7 @@ export function buildContainerFromDb(db: MemoryDatabase, config: AppConfig): Con
   };
 }
 
-export function buildContainer(config: AppConfig): Container {
-  const db = MemoryDatabase.open(config.dbPath, migrations);
-  return buildContainerFromDb(db, config);
-}
-
-export function buildInMemoryContainer(config: AppConfig): Container {
-  const db = MemoryDatabase.openInMemory(migrations);
+export async function buildContainer(config: AppConfig): Promise<Container> {
+  const db = await MemoryDatabase.open(config.databaseUrl, migrations, { ssl: config.databaseSsl });
   return buildContainerFromDb(db, config);
 }

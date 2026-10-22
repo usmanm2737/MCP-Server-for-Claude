@@ -1,9 +1,8 @@
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 
-import type { AppConfig } from '../../src/config/env.js';
 import type { Container } from '../../src/container.js';
 import { createMcpServer } from '../../src/mcp/server.js';
-import { makeTestContainer } from '../helpers.js';
+import { makeTestContainer, type TestConfigOverrides } from '../helpers.js';
 
 export interface TestMcpSession {
   client: Client;
@@ -13,9 +12,9 @@ export interface TestMcpSession {
 
 /** Wires a real `Client` to a real `McpServer` over an in-memory linked transport pair — no stdio, no subprocess. */
 export async function connectTestClient(
-  overrides: Partial<AppConfig> = {},
+  overrides: TestConfigOverrides = {},
 ): Promise<TestMcpSession> {
-  const container = makeTestContainer(overrides);
+  const container = await makeTestContainer(overrides);
   const server = createMcpServer(container);
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: 'test-client', version: '0.0.0' });
@@ -27,7 +26,9 @@ export async function connectTestClient(
     container,
     close: async () => {
       await client.close();
-      container.db.close();
+      // The shared test db pool is closed once per test file by tests/setup.ts's
+      // afterAll — do not close it per-session here, or later tests in the same
+      // file would run against a closed pool.
     },
   };
 }

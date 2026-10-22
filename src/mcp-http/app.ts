@@ -16,6 +16,29 @@ import type { Container } from '../container.js';
 import { createMcpServer } from '../mcp/server.js';
 import { logger } from '../utils/logging.js';
 
+/** Minimal fixed-window rate limiter, in-memory, keyed by client IP — see `src/http/app.ts` for the REST API's twin. */
+function rateLimiter(windowMs: number, max: number) {
+  const hits = new Map<string, { count: number; resetAt: number }>();
+  return (req: Request, res: Response, next: () => void): void => {
+    const key = req.ip ?? 'unknown';
+    const now = Date.now();
+    const entry = hits.get(key);
+    if (!entry || now >= entry.resetAt) {
+      hits.set(key, { count: 1, resetAt: now + windowMs });
+      next();
+      return;
+    }
+    if (entry.count >= max) {
+      const retryAfterSec = Math.ceil((entry.resetAt - now) / 1000);
+      res.setHeader('Retry-After', String(retryAfterSec));
+      res.status(429).json({ error: { code: 'RATE_LIMITED', message: 'Too many requests.' } });
+      return;
+    }
+    entry.count++;
+    next();
+  };
+}
+
 export function createRemoteMcpApp(container: Container, config: AppConfig): Express {
   const token = config.remoteMcp.token ?? '';
   const sessions = new Map<string, NodeStreamableHTTPServerTransport>();
@@ -81,7 +104,16 @@ export function createRemoteMcpApp(container: Container, config: AppConfig): Exp
       config.remoteMcp.allowedOrigins.length > 0 ? [...config.remoteMcp.allowedOrigins] : undefined,
   });
 
-  app.post('/mcp', (req: Request, res: Response) => {
+  // Unauthenticated on purpose (same posture as the REST API's /health): hosting
+  // platforms like Render ping this to decide whether the service is up, before
+  // any credentials are in play.
+  app.get('/health', (_req: Request, res: Response) => {
+    res.status(200).json({ status: 'ok' });
+  });
+
+  const mcpRateLimit = rateLimiter(60_000, 120);
+
+  app.post('/mcp', mcpRateLimit, (req: Request, res: Response) => {
     if (!isAuthorized(req)) {
       unauthorized(res);
       return;
@@ -96,7 +128,7 @@ export function createRemoteMcpApp(container: Container, config: AppConfig): Exp
 
   // Streamable HTTP also uses GET (server-initiated stream on an existing session)
   // and DELETE (explicit session termination) — both require an existing session.
-  app.get('/mcp', (req: Request, res: Response) => {
+  app.get('/mcp', mcpRateLimit, (req: Request, res: Response) => {
     if (!isAuthorized(req)) {
       unauthorized(res);
       return;
@@ -109,7 +141,7 @@ export function createRemoteMcpApp(container: Container, config: AppConfig): Exp
     });
   });
 
-  app.delete('/mcp', (req: Request, res: Response) => {
+  app.delete('/mcp', mcpRateLimit, (req: Request, res: Response) => {
     if (!isAuthorized(req)) {
       unauthorized(res);
       return;

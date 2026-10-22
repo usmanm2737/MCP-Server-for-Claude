@@ -42,23 +42,20 @@ export interface CreateTaskInput {
 export class TaskRepository {
   constructor(private readonly db: MemoryDatabase) {}
 
-  findById(id: string): Task | null {
-    const row = this.db.raw.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as unknown as
-      TaskRow | undefined;
+  async findById(id: string): Promise<Task | null> {
+    const row = await this.db.queryOne<TaskRow>('SELECT * FROM tasks WHERE id = $1', [id]);
     return row ? mapRow(row) : null;
   }
 
-  create(input: CreateTaskInput): Task {
+  async create(input: CreateTaskInput): Promise<Task> {
     const id = newId();
     const ts = nowIso();
     const status = input.status ?? 'open';
     const priority = input.priority ?? 'normal';
-    this.db.raw
-      .prepare(
-        `INSERT INTO tasks (id, project_id, activity_id, title, description, status, priority, created_at, updated_at, completed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
-      )
-      .run(
+    await this.db.query(
+      `INSERT INTO tasks (id, project_id, activity_id, title, description, status, priority, created_at, updated_at, completed_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL)`,
+      [
         id,
         input.projectId,
         input.activityId ?? null,
@@ -68,7 +65,8 @@ export class TaskRepository {
         priority,
         ts,
         ts,
-      );
+      ],
+    );
     return {
       id,
       projectId: input.projectId,
@@ -83,25 +81,23 @@ export class TaskRepository {
     };
   }
 
-  listByStatuses(projectId: string, statuses: TaskStatus[], limit: number): Task[] {
-    const placeholders = statuses.map(() => '?').join(', ');
-    const rows = this.db.raw
-      .prepare(
-        `SELECT * FROM tasks
-         WHERE project_id = ? AND status IN (${placeholders})
-         ORDER BY
-           CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
-           created_at DESC, rowid DESC
-         LIMIT ?`,
-      )
-      .all(projectId, ...statuses, limit) as unknown as TaskRow[];
+  async listByStatuses(projectId: string, statuses: TaskStatus[], limit: number): Promise<Task[]> {
+    // `pg` serializes a JS array parameter to a Postgres array literal, so `= ANY($2)`
+    // takes the place of building a manual `IN (?, ?, ...)` placeholder list.
+    const rows = await this.db.query<TaskRow>(
+      `SELECT * FROM tasks
+       WHERE project_id = $1 AND status = ANY($2)
+       ORDER BY
+         CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
+         created_at DESC, seq DESC
+       LIMIT $3`,
+      [projectId, statuses, limit],
+    );
     return rows.map(mapRow);
   }
 
-  countAll(): number {
-    const row = this.db.raw.prepare('SELECT COUNT(*) AS n FROM tasks').get() as unknown as {
-      n: number;
-    };
-    return row.n;
+  async countAll(): Promise<number> {
+    const row = await this.db.queryOne<{ n: number }>('SELECT COUNT(*)::int AS n FROM tasks');
+    return row?.n ?? 0;
   }
 }

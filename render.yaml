@@ -1,0 +1,37 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+#
+# Deploys the remote MCP (Streamable HTTP) entrypoint — the one a browser-based
+# client like claude.ai web connects to — as a web service. The stdio server
+# (what Claude Code spawns locally) and the REST ingestion API are separate,
+# optional entrypoints not deployed by this blueprint; add a second `services`
+# entry with `startCommand: npm run start:http` if you also want the REST API
+# hosted somewhere.
+#
+# Render sets `PORT` automatically; src/config/env.ts reads it ahead of
+# CLAUDE_MEMORY_REMOTE_MCP_PORT, and detects the Render environment (via the
+# `RENDER` variable Render also sets) to default the bind host to 0.0.0.0.
+# You still must fill in the `sync: false` values below in the Render
+# dashboard after the first deploy — see README "Deploying to Render".
+services:
+  - type: web
+    name: claude-activity-memory
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm run start:remote-mcp
+    healthCheckPath: /health
+    envVars:
+      - key: CLAUDE_MEMORY_REMOTE_MCP_ENABLED
+        value: 'true'
+      - key: CLAUDE_MEMORY_DB_SSL
+        value: require
+      # Fill in manually in the Render dashboard (Environment tab) — never commit real values:
+      - key: DATABASE_URL
+        sync: false
+      - key: CLAUDE_MEMORY_REMOTE_MCP_TOKEN
+        sync: false
+      # Your service's public hostname, e.g. claude-activity-memory.onrender.com
+      # (predictable from the `name` above, but confirm it on the service's page) —
+      # every request is rejected with 403 until this is set.
+      - key: CLAUDE_MEMORY_REMOTE_MCP_ALLOWED_HOSTS
+        sync: false

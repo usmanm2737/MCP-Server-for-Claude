@@ -9,15 +9,15 @@ import { makeTestConfig, makeTestContainer } from '../helpers.js';
 
 const TOKEN = 'remote-test-token';
 
-function buildApp() {
+async function buildApp() {
   const config = makeTestConfig({ remoteMcp: { token: TOKEN } });
-  const container = makeTestContainer({ remoteMcp: { token: TOKEN } });
+  const container = await makeTestContainer({ remoteMcp: { token: TOKEN } });
   return { app: createRemoteMcpApp(container, config), container };
 }
 
 describe('remote MCP HTTP: authentication', () => {
   it('rejects a POST /mcp with no Authorization header', async () => {
-    const { app } = buildApp();
+    const { app } = await buildApp();
     const res = await request(app)
       .post('/mcp')
       .set('Content-Type', 'application/json')
@@ -26,7 +26,7 @@ describe('remote MCP HTTP: authentication', () => {
   });
 
   it('rejects a POST /mcp with the wrong bearer token', async () => {
-    const { app } = buildApp();
+    const { app } = await buildApp();
     const res = await request(app)
       .post('/mcp')
       .set('Authorization', 'Bearer wrong')
@@ -36,7 +36,7 @@ describe('remote MCP HTTP: authentication', () => {
   });
 
   it('rejects GET and DELETE /mcp without auth too', async () => {
-    const { app } = buildApp();
+    const { app } = await buildApp();
     const getRes = await request(app).get('/mcp');
     const deleteRes = await request(app).delete('/mcp');
     expect(getRes.status).toBe(401);
@@ -60,7 +60,7 @@ describe('remote MCP HTTP: full protocol round-trip over a real port', () => {
   });
 
   it('lists all 8 tools and completes a save/search round-trip over a real session', async () => {
-    const { app } = buildApp();
+    const { app } = await buildApp();
     const server = app.listen(0, '127.0.0.1');
     activeServer = server;
     await new Promise<void>((resolve) => server.once('listening', () => resolve()));

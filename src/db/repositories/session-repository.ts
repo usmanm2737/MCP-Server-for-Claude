@@ -10,7 +10,7 @@ interface SessionRow {
   title: string | null;
   started_at: string | null;
   ended_at: string | null;
-  metadata_json: string;
+  metadata: Record<string, unknown>;
   created_at: string;
 }
 
@@ -23,7 +23,7 @@ function mapRow(row: SessionRow): Session {
     title: row.title,
     startedAt: row.started_at,
     endedAt: row.ended_at,
-    metadata: JSON.parse(row.metadata_json) as Record<string, unknown>,
+    metadata: row.metadata,
     createdAt: row.created_at,
   };
 }
@@ -41,28 +41,26 @@ export interface CreateSessionInput {
 export class SessionRepository {
   constructor(private readonly db: MemoryDatabase) {}
 
-  findById(id: string): Session | null {
-    const row = this.db.raw.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as unknown as
-      SessionRow | undefined;
+  async findById(id: string): Promise<Session | null> {
+    const row = await this.db.queryOne<SessionRow>('SELECT * FROM sessions WHERE id = $1', [id]);
     return row ? mapRow(row) : null;
   }
 
-  findByExternalId(projectId: string, externalSessionId: string): Session | null {
-    const row = this.db.raw
-      .prepare('SELECT * FROM sessions WHERE project_id = ? AND external_session_id = ?')
-      .get(projectId, externalSessionId) as unknown as SessionRow | undefined;
+  async findByExternalId(projectId: string, externalSessionId: string): Promise<Session | null> {
+    const row = await this.db.queryOne<SessionRow>(
+      'SELECT * FROM sessions WHERE project_id = $1 AND external_session_id = $2',
+      [projectId, externalSessionId],
+    );
     return row ? mapRow(row) : null;
   }
 
-  create(input: CreateSessionInput): Session {
+  async create(input: CreateSessionInput): Promise<Session> {
     const id = newId();
     const createdAt = nowIso();
-    this.db.raw
-      .prepare(
-        `INSERT INTO sessions (id, project_id, source, external_session_id, title, started_at, ended_at, metadata_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
+    await this.db.query(
+      `INSERT INTO sessions (id, project_id, source, external_session_id, title, started_at, ended_at, metadata, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [
         id,
         input.projectId,
         input.source,
@@ -72,7 +70,8 @@ export class SessionRepository {
         input.endedAt ?? null,
         JSON.stringify(input.metadata ?? {}),
         createdAt,
-      );
+      ],
+    );
     return {
       id,
       projectId: input.projectId,
@@ -86,19 +85,25 @@ export class SessionRepository {
     };
   }
 
-  /** Reuses the session for this (project, externalSessionId) pair if one exists, else creates one. */
-  getOrCreateByExternalId(input: CreateSessionInput): Session {
+  /**
+   * Reuses the session for this (project, externalSessionId) pair if one
+   * exists, else creates one. There's a small race window under genuine
+   * concurrency (no unique constraint backs this — two near-simultaneous
+   * imports of the same external session could each create a row); the
+   * worst case is a harmless duplicate session, not corrupted data, so this
+   * is left as a known, accepted edge case rather than adding a partial
+   * unique index for it.
+   */
+  async getOrCreateByExternalId(input: CreateSessionInput): Promise<Session> {
     if (input.externalSessionId) {
-      const existing = this.findByExternalId(input.projectId, input.externalSessionId);
+      const existing = await this.findByExternalId(input.projectId, input.externalSessionId);
       if (existing) return existing;
     }
     return this.create(input);
   }
 
-  count(): number {
-    const row = this.db.raw.prepare('SELECT COUNT(*) AS n FROM sessions').get() as unknown as {
-      n: number;
-    };
-    return row.n;
+  async count(): Promise<number> {
+    const row = await this.db.queryOne<{ n: number }>('SELECT COUNT(*)::int AS n FROM sessions');
+    return row?.n ?? 0;
   }
 }

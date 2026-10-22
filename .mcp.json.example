@@ -5,7 +5,7 @@
       "args": ["dist/index.js"],
       "cwd": "/absolute/path/to/claude-activity-memory",
       "env": {
-        "CLAUDE_MEMORY_DB_PATH": "/absolute/path/to/claude-activity-memory/data/memory.db"
+        "DATABASE_URL": "postgresql://postgres:your-password@db.your-project-ref.supabase.co:5432/postgres"
       }
     }
   }

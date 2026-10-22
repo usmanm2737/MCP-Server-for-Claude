@@ -1,8 +1,9 @@
 # claude-activity-memory
 
-An MCP (Model Context Protocol) server that gives Claude Code (or any MCP client) persistent, searchable
-memory of project work — milestones, technical decisions, blockers, next steps — stored locally in
-SQLite, available again in a brand-new session or a brand-new client.
+An MCP (Model Context Protocol) server that gives Claude Code, claude.ai web, or any MCP client
+persistent, searchable memory of project work — milestones, technical decisions, blockers, next steps —
+stored in Postgres (Supabase works well, and is free), available again in a brand-new session, a
+brand-new client, or a different Claude profile entirely.
 
 **What this is not:** it does not watch a Claude.ai web browser session, and nothing in it runs
 automatically just because it's installed. A connected client has to actually call its tools for
@@ -13,6 +14,7 @@ anything to be saved or retrieved. See [Known limitations](#known-limitations).
 - [Architecture](#architecture)
 - [Requirements](#requirements)
 - [Installation](#installation)
+- [Database: Supabase/Postgres setup](#database-supabasepostgres-setup)
 - [Configuration](#configuration)
 - [Running the server](#running-the-server)
 - [Claude Code integration](#claude-code-integration)
@@ -20,11 +22,13 @@ anything to be saved or retrieved. See [Known limitations](#known-limitations).
 - [Using the tools](#using-the-tools)
 - [The optional HTTP ingestion API](#the-optional-http-ingestion-api)
 - [Testing with claude.ai web via a tunnel (ngrok)](#testing-with-claudeai-web-via-a-tunnel-ngrok)
-- [Database path and backups](#database-path-and-backups)
+- [Deploying to Render](#deploying-to-render)
+- [Multiple Claude profiles at once](#multiple-claude-profiles-at-once)
+- [Backups](#backups)
 - [Development](#development)
 - [Troubleshooting](#troubleshooting)
 - [Known limitations](#known-limitations)
-- [Roadmap: browser integration and a remote service](#roadmap-browser-integration-and-a-remote-service)
+- [Roadmap](#roadmap)
 
 ## Architecture
 
@@ -40,9 +44,10 @@ anything to be saved or retrieved. See [Known limitations](#known-limitations).
 └─────────────────────────┘        └────────────┬─────────────┘
                                                  │
 ┌─────────────────────────┐        ┌────────────▼─────────────┐
-│ Remote MCP client        │◄──────►│  src/mcp-http/index.ts    │
-│ (optional, e.g. claude.ai│        │  (McpServer, Streamable   │
-│  web via ngrok)          │        │   HTTP, auth required)    │
+│ Remote MCP clients        │◄──────►│  src/mcp-http/index.ts    │
+│ (claude.ai web, multiple │        │  (McpServer, Streamable   │
+│  profiles/sessions at    │        │   HTTP, one session per   │
+│  once — see below)       │        │   connection, auth req'd)  │
 └─────────────────────────┘        └────────────┬─────────────┘
                                                  │
                                    ┌─────────────▼─────────────┐
@@ -58,14 +63,15 @@ anything to be saved or retrieved. See [Known limitations](#known-limitations).
                         │                                                 │
                         └─────────────────────────┬───────────────────────┘
                                                     ▼
-                                         src/db/client.ts (node:sqlite)
-                                         SQLite file + FTS5 index
+                                      src/db/client.ts (pg — Postgres)
+                                  one shared database, FTS via tsvector/GIN
 ```
 
 Three independent, optional entrypoints share one `Container` (built in `src/container.ts`) and one
-database: `src/index.ts` (stdio, what Claude Code spawns locally), `src/http/index.ts` (the bespoke REST
-ingestion API), and `src/mcp-http/index.ts` (the *actual* MCP protocol over HTTP — for a remote client
-like claude.ai web that can't spawn a local process). Starting any one of them never affects the others.
+Postgres database: `src/index.ts` (stdio, what Claude Code spawns locally), `src/http/index.ts` (the
+bespoke REST ingestion API), and `src/mcp-http/index.ts` (the *actual* MCP protocol over HTTP — for
+remote clients like claude.ai web, including several connected **at the same time**). Starting any one
+of them never affects the others.
 
 Layers, top to bottom:
 
@@ -73,32 +79,51 @@ Layers, top to bottom:
   `@modelcontextprotocol/server` (the current stable v2 SDK line — see [`src/mcp/server.ts`](src/mcp/server.ts)).
   Tool handlers call services; they never touch SQL directly.
 - **Application services** (`src/services/`): the actual logic — dedup, fan-out from an activity into the
-  decisions/tasks tables, search query building, import orchestration.
+  decisions/tasks tables, search query building, import orchestration. Every method is `async` — the
+  database is a network call now, not a local file.
 - **Domain** (`src/domain/`): TypeScript types and every Zod input schema, shared by the MCP tools and the
   HTTP routes so both surfaces validate identically.
 - **Repositories** (`src/db/repositories/`): one file per table, parameterized SQL only.
-- **Database** (`src/db/client.ts`, `src/db/migrations/`): a thin wrapper over Node's built-in
-  `node:sqlite` with a transaction helper and an embedded migration runner.
+- **Database** (`src/db/client.ts`, `src/db/migrations/`): a thin wrapper over `pg` (node-postgres) with a
+  concurrency-safe transaction helper (see below) and an embedded migration runner.
 - **Ingestion adapters** (`src/ingestion/adapters/`): turn raw JSON/Markdown/text into a normalized
   `{session, records[]}` shape that `ImportService` persists.
-- **Optional HTTP API** (`src/http/`): a separate entrypoint (`src/http/index.ts`), never imported by the
-  stdio entrypoint, so it can't interfere with the MCP stdio stream and stays fully optional.
+- **Optional HTTP APIs** (`src/http/`, `src/mcp-http/`): separate entrypoints, never imported by the stdio
+  entrypoint, so neither can interfere with the MCP stdio stream and both stay fully optional.
 
-### Why `node:sqlite` instead of `better-sqlite3`
+### Why Postgres (via Supabase) instead of SQLite
 
-This project uses Node's **built-in** `node:sqlite` module (stable without flags on Node ≥22.13/24.x)
-rather than the `better-sqlite3` native dependency. It has full FTS5 support, which is all this project
-needs, and it means one fewer native binding to install/prebuild across platforms. The trade-off: no
-built-in `.transaction()` helper, so [`src/db/client.ts`](src/db/client.ts) hand-rolls one (with
-reentrancy — a nested `transaction()` call joins its caller's transaction instead of trying to nest a
-second `BEGIN`, which SQLite does not support).
+This project originally used Node's built-in `node:sqlite` — a good fit for "memory local to one
+machine." It was changed to Postgres specifically to support **multiple Claude profiles/sessions
+connecting to the same server at the same time, sharing memory** (the whole point of deploying this
+remotely — see [Multiple Claude profiles at once](#multiple-claude-profiles-at-once)). A single SQLite
+file is not meant for that kind of concurrent, networked, multi-client access; a real database is.
+Supabase specifically because it's a hosted Postgres with a generous free tier and nothing proprietary
+in how this project talks to it — it's just a connection string (`DATABASE_URL`) to a normal Postgres
+database via the `pg` driver; any other Postgres host works identically.
 
 ### Why raw parameterized SQL instead of an ORM
 
-The spec allowed either Drizzle ORM or parameterized SQL, whichever is simpler and more reliable.
-Drizzle's SQLite FTS5 support is not first-class, and this schema is small (7 tables) — plain
-parameterized SQL through `node:sqlite`'s `prepare()` keeps the whole data layer easy to read in one
-pass and avoids fighting an ORM's virtual-table support. See `src/db/repositories/*.ts`.
+The original brief allowed either Drizzle ORM or parameterized SQL, whichever is simpler and more
+reliable. This schema is small (7 tables) — plain parameterized SQL through `pg` keeps the whole data
+layer easy to read in one pass. See `src/db/repositories/*.ts`.
+
+### Full-text search: `tsvector` + `websearch_to_tsquery`, not SQLite FTS5
+
+`activities` has a generated `search_vector tsvector` column (title/summary/content, weighted) with a
+GIN index, kept in sync by Postgres itself on every insert — no separate index table for the app to
+maintain. Searches use `websearch_to_tsquery('english', <raw user query>)`, which takes the user's text
+directly and safely interprets web-search-style syntax (quotes, `-exclude`, stray punctuation) on its
+own — no hand-rolled query sanitizer needed. See `src/services/search-service.ts`.
+
+### Concurrency-safe transactions
+
+With a single local SQLite file accessed synchronously, "the current transaction" could safely be one
+mutable field. With a Postgres connection pool serving several real concurrent requests (multiple
+profiles connected at once — the reason for this whole migration), that would be a correctness bug: two
+requests could stomp on each other's transaction state. `src/db/client.ts` instead tracks the active
+transaction's client via `AsyncLocalStorage`, scoped per async call stack, and a nested `transaction()`
+call uses a real `SAVEPOINT` rather than just joining the outer one.
 
 ### How `save_activity` populates decisions and tasks
 
@@ -110,14 +135,17 @@ client reading `tools/list` sees it without reading this README).
 
 ## Requirements
 
-- **Node.js ≥ 22.13.0** (LTS "Active" line; this was built and tested against Node 24.x). This is a hard
-  requirement: `node:sqlite` needs ≥22.5, and runs without the `--experimental-sqlite` flag only from
-  22.13+ (and unflagged on all of 23.4+/24.x). On Node 22.5–22.12 you'd need to add
-  `--experimental-sqlite` to every `node` invocation below — upgrading is simpler.
+- **Node.js ≥ 22** (built and tested against Node 24.x — needed for the native `--env-file-if-exists`
+  flag and TypeScript stripping that `npm run dev`/`dev:http`/`dev:remote-mcp` rely on; `npm start`
+  against the compiled `dist/` output is less picky, but 22+ is the simplest safe bar).
 - npm (ships with Node).
-- No external services, no paid dependencies, no network calls from the stdio server.
+- **A reachable Postgres database.** [Supabase](https://supabase.com) free tier is the documented path
+  (see next section); any Postgres ≥ 13 works (needs `tsvector`/GIN support, which is all versions in
+  practice).
+- No paid dependencies in the code itself — Supabase/Render/ngrok, if you use them, have their own free
+  tiers sufficient for personal use, but are still third-party services you're choosing to depend on.
 
-Check your version:
+Check your Node version:
 
 ```bash
 node --version
@@ -131,7 +159,7 @@ macOS/Linux:
 git clone <this-repo-url> claude-activity-memory
 cd claude-activity-memory
 npm install
-cp .env.example .env   # optional — defaults work with no .env at all
+cp .env.example .env
 npm run build
 ```
 
@@ -141,9 +169,35 @@ Windows PowerShell:
 git clone <this-repo-url> claude-activity-memory
 Set-Location claude-activity-memory
 npm install
-Copy-Item .env.example .env   # optional — defaults work with no .env at all
+Copy-Item .env.example .env
 npm run build
 ```
+
+You'll fill in `.env` with a real `DATABASE_URL` in the next section before anything will actually start
+— there is no local-file fallback.
+
+## Database: Supabase/Postgres setup
+
+1. Create a free account at [supabase.com](https://supabase.com) and create a new project (pick any
+   name/region; note the database password you set — you'll need it in the connection string).
+2. In the project dashboard: **Project Settings → Database → Connection string**, select the **URI**
+   tab. Copy it — it looks like
+   `postgresql://postgres:[YOUR-PASSWORD]@db.<project-ref>.supabase.co:5432/postgres`.
+3. Put it in `.env`:
+   ```
+   DATABASE_URL=postgresql://postgres:your-real-password@db.your-project-ref.supabase.co:5432/postgres
+   ```
+4. That's it — there's no separate migration command to run. Every entrypoint applies pending schema
+   migrations automatically on startup (`src/db/client.ts`'s `runMigrations`), the same way this project
+   always worked with SQLite.
+
+Supabase's connection pooler (the "Transaction" or "Session" mode connection string, if you prefer it
+over the direct connection) works too — this app issues normal parameterized queries and short-lived
+transactions, nothing the pooler would reject. If you use a different Postgres host, nothing above
+changes except where you got the connection string from.
+
+**Never commit a real `DATABASE_URL`** — it contains your database password. `.env` is gitignored for
+exactly this reason.
 
 ## Configuration
 
@@ -154,13 +208,17 @@ with defaults; the main ones:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CLAUDE_MEMORY_DB_PATH` | per-user data dir (below) | SQLite file path |
+| `DATABASE_URL` | *(required, no default)* | Postgres connection string |
+| `CLAUDE_MEMORY_DB_SSL` | `require` | `require` (encrypted, lenient cert check — right for Supabase) / `strict` / `disable` |
 | `CLAUDE_MEMORY_MAX_RESULTS` | `50` | hard cap on rows returned by search/list tools |
 | `CLAUDE_MEMORY_MAX_IMPORT_BYTES` | `5000000` | max accepted size for one import |
 | `CLAUDE_MEMORY_MAX_IMPORT_RECORDS` | `2000` | max records one import may create |
 | `CLAUDE_MEMORY_IMPORT_DIRS` | *(unset = unrestricted)* | comma-separated allowed directories for `import_conversation`'s `filePath` |
 | `CLAUDE_MEMORY_HTTP_ENABLED` | `false` | must be `true` to let `npm run start:http` bind a port at all |
-| `CLAUDE_MEMORY_HTTP_TOKEN` | *(none — required if HTTP is enabled)* | bearer token for the HTTP API |
+| `CLAUDE_MEMORY_HTTP_TOKEN` | *(none — required if HTTP is enabled)* | bearer token for the REST API |
+| `CLAUDE_MEMORY_REMOTE_MCP_ENABLED` | `false` | must be `true` to let `npm run start:remote-mcp` bind a port at all |
+| `CLAUDE_MEMORY_REMOTE_MCP_TOKEN` | *(none — required if enabled)* | bearer token every connecting profile/session uses |
+| `CLAUDE_MEMORY_REMOTE_MCP_ALLOWED_HOSTS` | *(empty)* | your tunnel's/deployment's hostname — required or every remote request gets `403` |
 
 **Never commit `.env`** — it's gitignored. `.env.example` has no real values and is safe to commit.
 
@@ -185,7 +243,7 @@ wire). If you ever see non-JSON-RPC text on stdout from this process, that's a b
 
 ## Claude Code integration
 
-1. Build the project (`npm run build`) so `dist/index.js` exists.
+1. Build the project (`npm run build`) so `dist/index.js` exists, and `.env` has a real `DATABASE_URL`.
 2. Register it, with the Claude Code CLI, using this repo's real absolute path:
 
    ```bash
@@ -226,7 +284,7 @@ npm run verify-setup
 ```
 
 This spawns the real built server over stdio (the same way Claude Code does), confirms all 8 tools and
-the prompt are registered, checks the FTS5 index's integrity, and round-trips one self-cleaning marker
+the prompt are registered, checks full-text search's health, and round-trips one self-cleaning marker
 activity through save → search → delete against **your actual configured database** — then removes the
 marker. It leaves nothing behind either way (on failure, it still deletes the marker it created before
 reporting the error). Exit code is non-zero on any failure.
@@ -246,8 +304,8 @@ Via the Inspector or any connected client, call:
 {
   "projectName": "My Project",
   "activityType": "decision",
-  "title": "Use SQLite instead of Postgres",
-  "summary": "Simplest option for a local-first, single-user tool; no server to run."
+  "title": "Use Postgres instead of a local file",
+  "summary": "Needed multiple Claude profiles to share memory concurrently; a local SQLite file can't do that."
 }
 ```
 
@@ -256,7 +314,7 @@ the decisions table. Then:
 
 ```jsonc
 // search_activity
-{ "query": "SQLite" }
+{ "query": "Postgres" }
 ```
 
 returns that activity with a snippet. Calling `save_activity` again with the exact same
@@ -339,21 +397,23 @@ server read an arbitrary file. CORS is same-origin-only (no browser cross-origin
 simple in-memory rate limiter (120 req/min/IP) and request timeouts (30s) apply to every route.
 
 A browser-extension integration is **not** built in this milestone; these two routes are the contract a
-future one would use (see [Roadmap](#roadmap-browser-integration-and-a-remote-service)).
+future one would use (see [Roadmap](#roadmap)).
 
 ## Testing with claude.ai web via a tunnel (ngrok)
 
 Claude Code connects to this server by **spawning it locally** (stdio) — a browser can't do that.
 claude.ai's web app instead needs a server reachable over **HTTPS**, speaking the actual MCP protocol
 (not the REST API above). `src/mcp-http/index.ts` is that: a third, separate, also-optional entrypoint
-that serves the exact same 8 tools/resource/prompt over the MCP "Streamable HTTP" transport. This has
-been tested end-to-end locally (real HTTP session, real auth, real tool calls — see
-`tests/integration/remote-mcp-http.test.ts`); the ngrok + claude.ai steps below involve claude.ai's own
-UI, which can change independently of this project, so verify the exact screen names yourself as you go.
+that serves the exact same 8 tools/resource/prompt over the MCP "Streamable HTTP" transport, with one
+session per connecting client — this is also what lets [multiple Claude profiles connect at
+once](#multiple-claude-profiles-at-once). This has been tested end-to-end locally (real HTTP session,
+real auth, real tool calls — see `tests/integration/remote-mcp-http.test.ts`); the ngrok + claude.ai
+steps below involve claude.ai's own UI, which can change independently of this project, so verify the
+exact screen names yourself as you go.
 
 ### 1. Enable and start the remote MCP server
 
-In `.env`:
+In `.env` (in addition to `DATABASE_URL`, already set from the Supabase step above):
 
 ```
 CLAUDE_MEMORY_REMOTE_MCP_ENABLED=true
@@ -412,38 +472,71 @@ runs unless you start it, and the ngrok URL stops working the moment the tunnel 
 tunnel open longer than you're actively testing; anyone with that URL and your token can call every tool,
 including `delete_activity` and `update_project_state`.
 
-## Database path and backups
+## Deploying to Render
 
-Default database location (no `CLAUDE_MEMORY_DB_PATH` set):
+For an **always-on** remote MCP server (no laptop-with-a-tunnel-open required) — [render.yaml](render.yaml)
+in this repo is a ready-to-use [Render Blueprint](https://render.com/docs/blueprint-spec) for exactly
+this, deploying `src/mcp-http/index.ts` (the remote MCP entrypoint) as a web service.
 
-- Windows: `%APPDATA%\claude-activity-memory\memory.db`
-- macOS: `~/Library/Application Support/claude-activity-memory/memory.db`
-- Linux: `$XDG_DATA_HOME/claude-activity-memory/memory.db` (falls back to `~/.local/share/...`)
+1. Push this repo to GitHub (or GitLab/Bitbucket) if you haven't already.
+2. In the [Render dashboard](https://dashboard.render.com): **New → Blueprint**, point it at your repo.
+   Render reads `render.yaml` and proposes the `claude-activity-memory` web service.
+3. Before (or right after) the first deploy, fill in the environment variables `render.yaml` marks as
+   `sync: false` (Render's dashboard → your service → **Environment**):
+   - `DATABASE_URL` — your Supabase connection string (see
+     [Database: Supabase/Postgres setup](#database-supabasepostgres-setup)).
+   - `CLAUDE_MEMORY_REMOTE_MCP_TOKEN` — generate one the same way as everywhere else in this README.
+   - `CLAUDE_MEMORY_REMOTE_MCP_ALLOWED_HOSTS` — your service's hostname, e.g.
+     `claude-activity-memory.onrender.com` (visible on the service's page; predictable from whatever name
+     you gave it in step 2). Every request gets `403` until this is set, exactly like the ngrok case.
+4. Deploy. Render builds (`npm install && npm run build`) and starts (`npm run start:remote-mcp`)
+   automatically, and pings `GET /health` to confirm it's up.
+5. Your MCP endpoint is `https://<your-service>.onrender.com/mcp` — use it in claude.ai's **Add custom
+   connector** exactly as in the ngrok walkthrough above, minus the tunnel.
 
-It's a single SQLite database in **WAL mode**, so a running server will also have `memory.db-wal` and
-`memory.db-shm` alongside it.
+Render's free web service tier spins down after inactivity and takes a few seconds to wake back up on the
+next request — fine for personal use, worth knowing if the first call after a while feels slow. The REST
+ingestion API (`src/http/index.ts`) isn't deployed by this blueprint; add a second `services:` entry with
+`startCommand: npm run start:http` and its own env vars if you want that hosted too.
 
-**Backup**: stop the server first (WAL files aren't guaranteed consistent to copy while a writer is
-active), then copy all three files (`memory.db`, `memory.db-wal`, `memory.db-shm` — the latter two may
-not exist if nothing was pending) as one set.
+## Multiple Claude profiles at once
+
+The remote MCP entrypoint (`src/mcp-http/`) gives each connecting client its own session (tracked by the
+`Mcp-Session-Id` the Streamable HTTP transport issues — see `src/mcp-http/app.ts`), but every session
+reads and writes the **same** Postgres database. That's the model this project uses:
+
+- **One shared memory, many simultaneous connections.** Open this server from your work laptop and your
+  personal machine, or from two different Claude profiles, at the same time — both see the same
+  projects/activities, and both can save/search concurrently without stepping on each other (that's what
+  the `AsyncLocalStorage`-based transaction handling and `SAVEPOINT`-based nesting in `src/db/client.ts`
+  are specifically for).
+- **Not per-user private memory.** There is no login system, no per-profile data isolation, and no
+  concept of "whose" project something is beyond the `projectName`/`activityType` you choose when saving.
+  Anyone with the bearer token can read and write everything. If you need separate, private memory per
+  person/profile instead of one shared pool, that's a different (larger) feature — a real per-user auth
+  scheme plus a tenant/owner column threaded through every table — not what's built here.
+- **Same token for everyone.** `CLAUDE_MEMORY_REMOTE_MCP_TOKEN` is one shared secret; there's no
+  per-profile token issuance. Rotate it (generate a new one, update every connected client) if you ever
+  suspect it's leaked.
+
+## Backups
+
+Supabase takes its own automatic backups (frequency/retention depends on your plan — check your
+project's **Database → Backups** page). For a manual backup of any Postgres database this project talks
+to, `pg_dump` the connection string:
 
 ```bash
-# macOS/Linux, server stopped:
-cp memory.db memory.db-wal memory.db-shm /path/to/backup/ 2>/dev/null
+pg_dump "$DATABASE_URL" -f backup-$(date +%Y%m%d).sql
 ```
 
-```powershell
-# Windows PowerShell, server stopped:
-Copy-Item memory.db, memory.db-wal, memory.db-shm -Destination D:\backup\ -ErrorAction SilentlyContinue
-```
-
-**Restore**: stop the server, replace the file(s), start it again — the schema-migration check runs on
-every startup and is a no-op if the restored file is already current.
+Restore with `psql "$DATABASE_URL" -f backup-20260101.sql` against a fresh/empty database (the app's own
+migration runner will still apply cleanly on top — it's idempotent).
 
 **Deletion**: `delete_activity` (with `confirm: true`) removes exactly one activity, its tag links, and
-its search-index entry; it leaves any decision/task that referenced it in place, just detached
-(`activity_id` set to null). There is no bulk-delete tool by design — if you need to wipe everything,
-stop the server and delete the database file(s) directly.
+its search-index entry (the generated `search_vector` column updates itself); it leaves any decision/task
+that referenced it in place, just detached (`activity_id` set to null). There is no bulk-delete tool by
+design — if you need to wipe everything, truncate the tables yourself in the Supabase SQL editor or via
+`psql`.
 
 ## Development
 
@@ -461,16 +554,22 @@ npm run build         # tsc -> dist/
 npm run check         # typecheck && lint && test && build, in that order
 ```
 
-Tests (`tests/unit`, `tests/integration`, `tests/mcp`) never touch a real file or your real database —
-unit/integration tests use an in-memory `node:sqlite` database per test (`tests/helpers.ts`), and the
-MCP-level tests (`tests/mcp/`) connect a real `@modelcontextprotocol/client` `Client` to a real
-`McpServer` over `InMemoryTransport.createLinkedPair()` — no subprocess, no stdio, but a real protocol
-round-trip through real tool/resource/prompt registration.
+**Tests need a real reachable Postgres** — set `TEST_DATABASE_URL` (a dedicated database/project,
+separate from whatever `DATABASE_URL` points at for real use, since every integration test truncates all
+application tables between runs). The suite runs test files sequentially against one shared connection
+pool (`fileParallelism: false` in `vitest.config.ts`) specifically so those truncates never race against
+each other. The MCP-level tests (`tests/mcp/`) additionally connect a real `@modelcontextprotocol/client`
+`Client` to a real `McpServer` over `InMemoryTransport.createLinkedPair()` — no subprocess, no stdio, but
+a real protocol round-trip through real tool/resource/prompt registration, on top of the same shared
+database.
 
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
+| `DATABASE_URL ... is not set` at startup | No connection string configured | Set `DATABASE_URL` in `.env` — see [Database: Supabase/Postgres setup](#database-supabasepostgres-setup) |
+| Connection error / timeout on startup | Wrong password, wrong host, or Supabase project paused (free tier pauses after inactivity) | Double-check the connection string; wake the project from the Supabase dashboard if paused |
+| `self-signed certificate` or similar TLS error | `CLAUDE_MEMORY_DB_SSL=strict` against a host whose cert chain Node doesn't trust | Use the default `require` (encrypts but doesn't verify the chain) unless you specifically need `strict` |
 | Client can't connect / tools never appear | Wrong path in `.mcp.json`/CLI registration, or `dist/index.js` doesn't exist | Run `npm run build`; confirm the path is absolute and correct; check client logs |
 | `CLAUDE_MEMORY_HTTP_ENABLED is true but ... TOKEN is not set` at startup | HTTP enabled with no token | Set `CLAUDE_MEMORY_HTTP_TOKEN` in `.env` |
 | HTTP API: `401 UNAUTHORIZED` | Missing/wrong `Authorization: Bearer <token>` header | Check the header exactly matches `CLAUDE_MEMORY_HTTP_TOKEN` |
@@ -478,11 +577,12 @@ round-trip through real tool/resource/prompt registration.
 | `import_conversation` → "outside the configured import directories" | `CLAUDE_MEMORY_IMPORT_DIRS` is set and the path isn't inside it | Use a path inside an allowed directory, or unset the variable |
 | `import_conversation` → "does not match the supported conversation import schema" | JSON isn't schemaVersion-1 shaped | Compare against `examples/sample-conversation.json` and `importedConversationV1Schema` in `src/domain/schemas.ts` |
 | A tool call returns `isError: true` with a generic "unexpected internal error" message | An unhandled exception — intentionally generic so internals never leak to the client | Check the server's stderr log for the real error (structured JSON, one line per event) |
-| `node:sqlite` import fails / `DatabaseSync is not a constructor` | Node version too old | Upgrade to Node ≥22.13 (22.5–22.12 needs `--experimental-sqlite`) |
-| Search returns no hits for text you can see is there | Usually a search term issue, not a bug — FTS5 only matches token boundaries it indexed with (punctuation like `.`/`-`/`:` splits tokens) | Try simpler/shorter search terms; `search_activity` already quotes each word so operators like `AND`/`-foo` are treated as literal text, not FTS5 syntax |
+| Search returns no hits for text you can see is there | Usually a search term issue, not a bug — `websearch_to_tsquery` only matches whole words/token boundaries it indexed with | Try simpler/shorter search terms |
 | Nothing ever gets saved even though "it should have" | The connected client never actually called `save_activity` | This is expected — see [`CLAUDE.md`](CLAUDE.md)'s opening warning; memory requires an explicit tool call, always |
-| Remote MCP: every tunneled request gets `403` | ngrok's hostname isn't on the Host-header allow-list | Add it to `CLAUDE_MEMORY_REMOTE_MCP_ALLOWED_HOSTS` and restart `start:remote-mcp` (see [Testing with claude.ai web](#testing-with-claudeai-web-via-a-tunnel-ngrok)) |
+| Remote MCP: every request gets `403` | Your tunnel's/deployment's hostname isn't on the Host-header allow-list | Add it to `CLAUDE_MEMORY_REMOTE_MCP_ALLOWED_HOSTS` and restart (see [ngrok](#testing-with-claudeai-web-via-a-tunnel-ngrok) or [Render](#deploying-to-render)) |
 | Remote MCP: `401` from claude.ai even with the right token configured | claude.ai's custom-connector UI may send auth differently than expected (e.g. full OAuth instead of a bearer header) | Check exactly what header/flow claude.ai's current connector UI sends — this project only implements plain bearer-token auth for this entrypoint today |
+| Render: first request after a while is very slow | Free tier spun the service down after inactivity | Expected — it wakes up in a few seconds; upgrade the plan if this matters for your use case |
+| Tests fail immediately with `TEST_DATABASE_URL is not set` | No test database configured | Set `TEST_DATABASE_URL` to a real (ideally dedicated) Postgres connection string before running `npm test` |
 
 ## Known limitations
 
@@ -490,38 +590,32 @@ round-trip through real tool/resource/prompt registration.
   to export it and run `import_conversation` (or the HTTP ingest route) on that export. There is no
   component that reads browser profiles, cookies, local storage, or any undocumented private API — by
   design, not as an oversight.
-- **Single-writer, single-machine.** SQLite in WAL mode handles one writer well; this is not a
-  multi-user or multi-host memory store.
-- **Remote MCP access is bearer-token-only, ngrok-tunnel-only.** `src/mcp-http/index.ts` lets a remote
-  client reach this server, but there's no OAuth support, no persistent public hosting, and it's still
-  the one local SQLite file underneath — see
-  [Testing with claude.ai web](#testing-with-claudeai-web-via-a-tunnel-ngrok) and the
-  [Roadmap](#roadmap-browser-integration-and-a-remote-service).
-- **No full-text ranking tuning.** Search uses FTS5's default `bm25` ranking with no per-field weighting.
+- **Shared memory, not per-user private memory.** See [Multiple Claude profiles at
+  once](#multiple-claude-profiles-at-once) — everyone with the bearer token reads/writes the same pool.
+- **Remote MCP auth is a single shared bearer token, no OAuth.** Fine for personal/small-team use behind
+  a token you control; not a substitute for a real per-user auth system.
+- **No full-text ranking tuning.** Search uses Postgres's default `ts_rank` with no per-field weighting
+  beyond the `setweight('A'/'B'/'C')` already applied to title/summary/content.
 - **Project tagging schema exists, no tool uses it yet.** The `project_tags` table is in the schema (per
   the original spec's "support tags for projects and activities") but none of the 8 tools currently
   write to it — only activity tagging (`save_activity`'s `tags` field) is wired up.
 - **No automatic secret scanning on import or save.** Nothing here detects or redacts credentials in
   content you save or import — that responsibility is on the caller (see `CLAUDE.md`).
 
-## Roadmap: browser integration and a remote service
+## Roadmap
 
-Two things explicitly **not** built in this milestone, by the original design brief, with the seam they'd
-plug into:
+Things explicitly **not** built, with the seam they'd plug into:
 
 - **A browser extension** that captures Claude.ai web conversations and pushes them to this server. It
   would be a separate, opt-in component with its own explicit permission model, talking to the existing
   `POST /api/v1/ingest/conversation` contract (optionally a per-message variant of
   `POST /api/v1/projects/:projectId/activities`) — it would not require changes to the memory engine
   itself, since ingestion is already adapter-based (`src/ingestion/adapters/`).
-- **A permanently-hosted remote MCP service**, for memory shared across machines/people. The *transport*
-  half of this now exists — `src/mcp-http/index.ts` serves the real MCP protocol over HTTP, and
-  [Testing with claude.ai web via a tunnel](#testing-with-claudeai-web-via-a-tunnel-ngrok) covers
-  connecting to it today via ngrok. What's still missing for a genuine always-on, multi-machine version:
-  somewhere to host it that isn't your own laptop with a tunnel open, and — if it should be shared across
-  machines rather than just reached remotely by one person — swapping the local SQLite file for a
-  networked database behind the same repository interfaces, which is not done.
+- **Per-user private memory.** Real per-profile auth (not one shared token) plus an owner/tenant column
+  threaded through every table and every query, so different people/profiles get isolated data instead
+  of one shared pool. A meaningfully larger feature than anything else in this README.
+- **OAuth for the remote MCP entrypoint**, if claude.ai's custom-connector flow ends up requiring it
+  instead of accepting a plain bearer token (see the caveat in
+  [Testing with claude.ai web](#testing-with-claudeai-web-via-a-tunnel-ngrok)).
 
-The browser extension does not exist today — don't represent it as available. The remote MCP transport
-exists but is ngrok-tunnel-only, off by default, and still backed by one local SQLite file; don't
-represent it as a hosted, always-on, or multi-machine-shared service.
+None of these exist today — don't represent any of them as available.

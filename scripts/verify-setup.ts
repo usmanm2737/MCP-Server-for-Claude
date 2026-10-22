@@ -58,9 +58,8 @@ async function runChecks(client: Client): Promise<void> {
   const statsBefore = (await client.callTool({ name: 'get_memory_stats', arguments: {} }))
     .structuredContent as { dbPath: string; ftsIndexOk: boolean };
   logStep(`Using database: ${statsBefore.dbPath}`);
-  if (!statsBefore.ftsIndexOk)
-    throw new Error('Full-text search index failed its integrity check.');
-  logStep('FTS5 search index OK.');
+  if (!statsBefore.ftsIndexOk) throw new Error('Full-text search failed its health check.');
+  logStep('Full-text search OK.');
 
   const marker = `verify-setup ping ${new Date().toISOString()}`;
   const saveResult = await client.callTool({
@@ -85,7 +84,7 @@ async function runChecks(client: Client): Promise<void> {
     const { count } = searchResult.structuredContent as { count: number };
     if (count !== 1)
       throw new Error(`Expected to find exactly 1 search hit for the marker, found ${count}.`);
-    logStep('Marker activity is searchable via FTS5.');
+    logStep('Marker activity is searchable.');
   } finally {
     // Clean up the marker even if the search assertion above failed.
     const deleteResult = await client.callTool({
@@ -107,7 +106,7 @@ async function main(): Promise<void> {
     throw new Error(`${DIST_ENTRY} does not exist. Run "npm run build" first.`);
   }
 
-  logStep(`Node ${process.version} (requires >=22.13 for node:sqlite without flags)`);
+  logStep(`Node ${process.version}`);
   logStep(`Spawning: node ${DIST_ENTRY}`);
 
   const transport = new StdioClientTransport({

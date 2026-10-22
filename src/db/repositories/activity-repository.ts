@@ -1,5 +1,3 @@
-import type { SQLInputValue } from 'node:sqlite';
-
 import type { MemoryDatabase } from '../client.js';
 import type { Activity } from '../../domain/models.js';
 import { newId, nowIso } from '../../utils/ids.js';
@@ -15,7 +13,7 @@ interface ActivityRow {
   content: string | null;
   source_reference: string | null;
   content_hash: string;
-  metadata_json: string;
+  metadata: Record<string, unknown>;
   created_at: string;
   imported_at: string;
 }
@@ -52,7 +50,7 @@ function mapRow(row: ActivityRow, tags: string[]): Activity {
     content: row.content,
     sourceReference: row.source_reference,
     contentHash: row.content_hash,
-    metadata: JSON.parse(row.metadata_json) as Record<string, unknown>,
+    metadata: row.metadata,
     tags,
     createdAt: row.created_at,
     importedAt: row.imported_at,
@@ -62,70 +60,71 @@ function mapRow(row: ActivityRow, tags: string[]): Activity {
 export class ActivityRepository {
   constructor(private readonly db: MemoryDatabase) {}
 
-  private tagsFor(activityId: string): string[] {
-    const rows = this.db.raw
-      .prepare(
-        `SELECT t.name AS name
-         FROM activity_tags at
-         JOIN tags t ON t.id = at.tag_id
-         WHERE at.activity_id = ?
-         ORDER BY t.name`,
-      )
-      .all(activityId) as unknown as Array<{ name: string }>;
+  private async tagsFor(activityId: string): Promise<string[]> {
+    const rows = await this.db.query<{ name: string }>(
+      `SELECT t.name AS name
+       FROM activity_tags atg
+       JOIN tags t ON t.id = atg.tag_id
+       WHERE atg.activity_id = $1
+       ORDER BY t.name`,
+      [activityId],
+    );
     return rows.map((r) => r.name);
   }
 
-  private ensureTagIds(names: string[]): number[] {
+  private async ensureTagIds(names: string[]): Promise<number[]> {
     const ids: number[] = [];
     for (const rawName of names) {
       const name = rawName.trim().toLowerCase();
       if (!name) continue;
-      this.db.raw.prepare('INSERT OR IGNORE INTO tags (name) VALUES (?)').run(name);
-      const row = this.db.raw
-        .prepare('SELECT id FROM tags WHERE name = ?')
-        .get(name) as unknown as {
-        id: number;
-      };
-      ids.push(row.id);
+      // ON CONFLICT DO UPDATE (rather than DO NOTHING) so RETURNING always yields
+      // the row's id, whether this call just inserted it or it already existed.
+      const row = await this.db.queryOne<{ id: number }>(
+        `INSERT INTO tags (name) VALUES ($1)
+         ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+         RETURNING id`,
+        [name],
+      );
+      if (row) ids.push(row.id);
     }
     return ids;
   }
 
-  findById(id: string): Activity | null {
-    const row = this.db.raw.prepare('SELECT * FROM activities WHERE id = ?').get(id) as unknown as
-      ActivityRow | undefined;
-    return row ? mapRow(row, this.tagsFor(row.id)) : null;
+  async findById(id: string): Promise<Activity | null> {
+    const row = await this.db.queryOne<ActivityRow>('SELECT * FROM activities WHERE id = $1', [id]);
+    return row ? mapRow(row, await this.tagsFor(row.id)) : null;
   }
 
-  findByContentHash(projectId: string, contentHash: string): Activity | null {
-    const row = this.db.raw
-      .prepare('SELECT * FROM activities WHERE project_id = ? AND content_hash = ?')
-      .get(projectId, contentHash) as unknown as ActivityRow | undefined;
-    return row ? mapRow(row, this.tagsFor(row.id)) : null;
+  async findByContentHash(projectId: string, contentHash: string): Promise<Activity | null> {
+    const row = await this.db.queryOne<ActivityRow>(
+      'SELECT * FROM activities WHERE project_id = $1 AND content_hash = $2',
+      [projectId, contentHash],
+    );
+    return row ? mapRow(row, await this.tagsFor(row.id)) : null;
   }
 
   /**
-   * Inserts the activity row, its FTS index entry, and its tag links as one
-   * atomic unit (via `db.transaction`, which joins a caller's outer
-   * transaction if there is one). Throws the underlying SQLite constraint
-   * error on a duplicate `(project_id, content_hash)` — callers that treat
-   * duplicates as a soft "skip" should check `findByContentHash` first.
+   * Inserts the activity row and its tag links as one atomic unit (via
+   * `db.transaction`, which joins a caller's outer transaction — as a
+   * `SAVEPOINT` — if there is one). The full-text search vector is
+   * maintained by Postgres itself (a generated column), not by this method.
+   * Throws the underlying unique-constraint error on a duplicate
+   * `(project_id, content_hash)` — callers that treat duplicates as a soft
+   * "skip" should check `findByContentHash` first.
    */
-  create(input: CreateActivityInput): Activity {
-    return this.db.transaction(() => {
+  async create(input: CreateActivityInput): Promise<Activity> {
+    return this.db.transaction(async () => {
       const id = newId();
       const createdAt = nowIso();
       const importedAt = createdAt;
-      const metadataJson = JSON.stringify(input.metadata ?? {});
+      const metadata = input.metadata ?? {};
 
-      this.db.raw
-        .prepare(
-          `INSERT INTO activities
-             (id, project_id, session_id, source, activity_type, title, summary, content,
-              source_reference, content_hash, metadata_json, created_at, imported_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
+      await this.db.query(
+        `INSERT INTO activities
+           (id, project_id, session_id, source, activity_type, title, summary, content,
+            source_reference, content_hash, metadata, created_at, imported_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+        [
           id,
           input.projectId,
           input.sessionId ?? null,
@@ -136,25 +135,21 @@ export class ActivityRepository {
           input.content ?? null,
           input.sourceReference ?? null,
           input.contentHash,
-          metadataJson,
+          JSON.stringify(metadata),
           createdAt,
           importedAt,
-        );
-
-      this.db.raw
-        .prepare(
-          `INSERT INTO activities_fts (activity_id, project_id, title, summary, content)
-           VALUES (?, ?, ?, ?, ?)`,
-        )
-        .run(id, input.projectId, input.title, input.summary, input.content ?? '');
+        ],
+      );
 
       const tagNames = input.tags ?? [];
       if (tagNames.length > 0) {
-        const tagIds = this.ensureTagIds(tagNames);
-        const insertLink = this.db.raw.prepare(
-          'INSERT OR IGNORE INTO activity_tags (activity_id, tag_id) VALUES (?, ?)',
-        );
-        for (const tagId of tagIds) insertLink.run(id, tagId);
+        const tagIds = await this.ensureTagIds(tagNames);
+        for (const tagId of tagIds) {
+          await this.db.query(
+            'INSERT INTO activity_tags (activity_id, tag_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+            [id, tagId],
+          );
+        }
       }
 
       return mapRow(
@@ -169,7 +164,7 @@ export class ActivityRepository {
           content: input.content ?? null,
           source_reference: input.sourceReference ?? null,
           content_hash: input.contentHash,
-          metadata_json: metadataJson,
+          metadata,
           created_at: createdAt,
           imported_at: importedAt,
         },
@@ -178,63 +173,53 @@ export class ActivityRepository {
     });
   }
 
-  /** Deletes the activity, its tag links, and its FTS entry. Returns false if no such activity existed. */
-  delete(id: string): boolean {
-    return this.db.transaction(() => {
-      const existing = this.db.raw.prepare('SELECT 1 FROM activities WHERE id = ?').get(id);
+  /** Deletes the activity and its tag links. Returns false if no such activity existed. */
+  async delete(id: string): Promise<boolean> {
+    return this.db.transaction(async () => {
+      const existing = await this.db.queryOne('SELECT 1 FROM activities WHERE id = $1', [id]);
       if (!existing) return false;
-      this.db.raw.prepare('DELETE FROM activity_tags WHERE activity_id = ?').run(id);
-      this.db.raw.prepare('DELETE FROM activities_fts WHERE activity_id = ?').run(id);
-      this.db.raw.prepare('DELETE FROM activities WHERE id = ?').run(id);
+      await this.db.query('DELETE FROM activity_tags WHERE activity_id = $1', [id]);
+      await this.db.query('DELETE FROM activities WHERE id = $1', [id]);
       return true;
     });
   }
 
-  listRecent(filter: ListActivitiesFilter): Activity[] {
+  async listRecent(filter: ListActivitiesFilter): Promise<Activity[]> {
     const clauses: string[] = [];
-    const params: SQLInputValue[] = [];
+    const params: unknown[] = [];
     if (filter.projectId) {
-      clauses.push('project_id = ?');
+      clauses.push(`project_id = $${params.length + 1}`);
       params.push(filter.projectId);
     }
     if (filter.activityType) {
-      clauses.push('activity_type = ?');
+      clauses.push(`activity_type = $${params.length + 1}`);
       params.push(filter.activityType);
     }
     const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
     params.push(filter.limit);
-    // `rowid` (SQLite's implicit, monotonically-increasing row identifier — available
-    // because `activities` has a TEXT primary key, not an INTEGER one, so it doesn't
-    // alias rowid) breaks created_at ties in actual insertion order; `id` (a random
-    // uuid) would not, since it carries no ordering information at all.
-    const rows = this.db.raw
-      .prepare(`SELECT * FROM activities ${where} ORDER BY created_at DESC, rowid DESC LIMIT ?`)
-      .all(...params) as unknown as ActivityRow[];
-    return rows.map((row) => mapRow(row, this.tagsFor(row.id)));
+    const rows = await this.db.query<ActivityRow>(
+      `SELECT * FROM activities ${where} ORDER BY created_at DESC, seq DESC LIMIT $${params.length}`,
+      params,
+    );
+    return Promise.all(rows.map(async (row) => mapRow(row, await this.tagsFor(row.id))));
   }
 
-  countAll(): number {
-    const row = this.db.raw.prepare('SELECT COUNT(*) AS n FROM activities').get() as unknown as {
-      n: number;
-    };
-    return row.n;
+  async countAll(): Promise<number> {
+    const row = await this.db.queryOne<{ n: number }>('SELECT COUNT(*)::int AS n FROM activities');
+    return row?.n ?? 0;
   }
 
-  oldestCreatedAt(): string | null {
-    const row = this.db.raw
-      .prepare('SELECT MIN(created_at) AS v FROM activities')
-      .get() as unknown as {
-      v: string | null;
-    };
-    return row.v;
+  async oldestCreatedAt(): Promise<string | null> {
+    const row = await this.db.queryOne<{ v: string | null }>(
+      'SELECT MIN(created_at) AS v FROM activities',
+    );
+    return row?.v ?? null;
   }
 
-  newestCreatedAt(): string | null {
-    const row = this.db.raw
-      .prepare('SELECT MAX(created_at) AS v FROM activities')
-      .get() as unknown as {
-      v: string | null;
-    };
-    return row.v;
+  async newestCreatedAt(): Promise<string | null> {
+    const row = await this.db.queryOne<{ v: string | null }>(
+      'SELECT MAX(created_at) AS v FROM activities',
+    );
+    return row?.v ?? null;
   }
 }

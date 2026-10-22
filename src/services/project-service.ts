@@ -18,8 +18,9 @@ export class ProjectService {
     private readonly activities: ActivityRepository,
     private readonly decisions: DecisionRepository,
     private readonly tasks: TaskService,
-    private readonly dbPath: string,
-    private readonly schemaVersionFn: () => number,
+    /** Host/database only — never the raw connection string, which carries credentials. See `redactConnectionString` in `config/env.ts`. */
+    private readonly dbDisplayName: string,
+    private readonly schemaVersionFn: () => Promise<number>,
   ) {}
 
   /**
@@ -28,10 +29,14 @@ export class ProjectService {
    * too. Both writes happen in one transaction; unrelated project columns
    * (description, id, timestestamps aside from updated_at) are untouched.
    */
-  updateProjectState(input: UpdateProjectStateInput): Project {
-    return this.db.transaction(() => {
-      const project = this.projects.getOrCreate(input.projectName);
-      const updated = this.projects.updateState(project.id, input.currentState, input.nextSteps);
+  async updateProjectState(input: UpdateProjectStateInput): Promise<Project> {
+    return this.db.transaction(async () => {
+      const project = await this.projects.getOrCreate(input.projectName);
+      const updated = await this.projects.updateState(
+        project.id,
+        input.currentState,
+        input.nextSteps,
+      );
 
       const hash = contentHash([
         project.id,
@@ -40,8 +45,8 @@ export class ProjectService {
         input.nextSteps,
         input.notes,
       ]);
-      if (!this.activities.findByContentHash(project.id, hash)) {
-        this.activities.create({
+      if (!(await this.activities.findByContentHash(project.id, hash))) {
+        await this.activities.create({
           projectId: project.id,
           source: 'claude-code',
           activityType: STATE_UPDATE_ACTIVITY_TYPE,
@@ -57,33 +62,44 @@ export class ProjectService {
   }
 
   /** Full project rows, most recently updated first — used by the HTTP `GET /api/v1/projects` route. */
-  listProjects(limit: number): Project[] {
+  async listProjects(limit: number): Promise<Project[]> {
     return this.projects.list(limit);
   }
 
-  getMemoryStats(): MemoryStats {
-    let ftsIndexOk = true;
+  async getMemoryStats(): Promise<MemoryStats> {
+    let searchOk = true;
     try {
-      this.db.raw
-        .prepare("INSERT INTO activities_fts(activities_fts) VALUES('integrity-check')")
-        .run();
+      await this.db.query(
+        "SELECT 1 FROM activities WHERE search_vector @@ websearch_to_tsquery('english', 'health-check-probe') LIMIT 1",
+      );
     } catch {
-      ftsIndexOk = false;
+      searchOk = false;
     }
 
+    const [projectCount, sessionCount, activityCount, decisionCount, taskCount, oldest, newest] =
+      await Promise.all([
+        this.projects.count(),
+        this.sessions.count(),
+        this.activities.countAll(),
+        this.decisions.countAll(),
+        this.tasks.countAll(),
+        this.activities.oldestCreatedAt(),
+        this.activities.newestCreatedAt(),
+      ]);
+
     return {
-      schemaVersion: this.schemaVersionFn(),
-      dbPath: this.dbPath,
+      schemaVersion: await this.schemaVersionFn(),
+      dbPath: this.dbDisplayName,
       counts: {
-        projects: this.projects.count(),
-        sessions: this.sessions.count(),
-        activities: this.activities.countAll(),
-        decisions: this.decisions.countAll(),
-        tasks: this.tasks.countAll(),
+        projects: projectCount,
+        sessions: sessionCount,
+        activities: activityCount,
+        decisions: decisionCount,
+        tasks: taskCount,
       },
-      oldestActivityAt: this.activities.oldestCreatedAt(),
-      newestActivityAt: this.activities.newestCreatedAt(),
-      ftsIndexOk,
+      oldestActivityAt: oldest,
+      newestActivityAt: newest,
+      ftsIndexOk: searchOk,
     };
   }
 }

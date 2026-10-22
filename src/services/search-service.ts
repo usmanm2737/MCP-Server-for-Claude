@@ -1,5 +1,3 @@
-import type { SQLInputValue } from 'node:sqlite';
-
 import type { MemoryDatabase } from '../db/client.js';
 import type { ProjectRepository } from '../db/repositories/project-repository.js';
 import type { SearchActivityInput } from '../domain/schemas.js';
@@ -16,33 +14,7 @@ interface SearchRow {
   created_at: string;
 }
 
-/**
- * Turns free-text user input into a safe FTS5 MATCH expression: each
- * whitespace-delimited word is wrapped as its own quoted string literal
- * (doubling any embedded `"`), and the quoted words are ANDed together
- * (FTS5's default for space-separated terms).
- *
- * Deliberately does *not* strip or rewrite punctuation inside each word
- * before quoting it — FTS5 tokenizes the *contents* of a quoted literal
- * with the same tokenizer it used to index stored content, so handing it
- * the word verbatim (e.g. a timestamp like `2026-10-22T11:41:56.636Z`,
- * which the tokenizer itself splits on `-`/`:`/`.`) is what makes it match
- * the same way that text was indexed. Pre-stripping that punctuation here
- * would re-join sub-tokens the indexer kept apart and silently break the
- * match instead. What quoting *does* do: neutralize FTS5 operator syntax
- * a user's word might otherwise trigger (`AND`, `-foo`, `col:value`,
- * unbalanced quotes) by making it literal text rather than query syntax.
- *
- * Returns `null` when there is nothing to search for (empty/whitespace-only input).
- */
-export function buildFtsQuery(rawQuery: string): string | null {
-  const words = rawQuery
-    .trim()
-    .split(/\s+/)
-    .filter((w) => w.length > 0);
-  if (words.length === 0) return null;
-  return words.map((w) => `"${w.replace(/"/g, '""')}"`).join(' ');
-}
+const TS_HEADLINE_OPTIONS = 'StartSel=[, StopSel=], MaxFragments=1, MaxWords=15, MinWords=5';
 
 export class SearchService {
   constructor(
@@ -56,42 +28,47 @@ export class SearchService {
    * query, an unknown project filter, or any filter combination that can't
    * match anything — "unknown results" are a graceful empty list with an
    * explanatory note, not an error.
+   *
+   * Query safety is delegated entirely to Postgres's `websearch_to_tsquery`:
+   * it takes the raw user string directly (quotes, `-exclude`, `or`,
+   * stray punctuation all handled per its own well-defined web-search
+   * syntax) and degrades to an empty, harmlessly-unmatchable tsquery for
+   * garbage input rather than erroring — no hand-rolled sanitizer needed
+   * (a previous SQLite/FTS5-era version of this file had one; it's gone
+   * because this function replaces what it was working around).
    */
-  search(input: SearchActivityInput): { hits: SearchHit[]; note?: string } {
-    const ftsQuery = buildFtsQuery(input.query);
-    if (!ftsQuery) {
-      return {
-        hits: [],
-        note: 'Query had no searchable text after removing punctuation/whitespace.',
-      };
+  async search(input: SearchActivityInput): Promise<{ hits: SearchHit[]; note?: string }> {
+    const trimmedQuery = input.query.trim();
+    if (!trimmedQuery) {
+      return { hits: [], note: 'Query had no searchable text.' };
     }
 
     let projectId: string | undefined;
     if (input.projectName) {
-      const project = this.projects.findByName(input.projectName);
+      const project = await this.projects.findByName(input.projectName);
       if (!project) {
         return { hits: [], note: `No project named "${input.projectName}" exists.` };
       }
       projectId = project.id;
     }
 
-    const clauses = ['activities_fts MATCH ?'];
-    const params: SQLInputValue[] = [ftsQuery];
+    const clauses = ["a.search_vector @@ websearch_to_tsquery('english', $1)"];
+    const params: unknown[] = [trimmedQuery];
 
     if (projectId) {
-      clauses.push('a.project_id = ?');
+      clauses.push(`a.project_id = $${params.length + 1}`);
       params.push(projectId);
     }
     if (input.activityType) {
-      clauses.push('a.activity_type = ?');
+      clauses.push(`a.activity_type = $${params.length + 1}`);
       params.push(input.activityType);
     }
     if (input.startDate) {
-      clauses.push('a.created_at >= ?');
+      clauses.push(`a.created_at >= $${params.length + 1}`);
       params.push(input.startDate);
     }
     if (input.endDate) {
-      clauses.push('a.created_at <= ?');
+      clauses.push(`a.created_at <= $${params.length + 1}`);
       params.push(input.endDate);
     }
 
@@ -100,29 +77,27 @@ export class SearchService {
 
     let rows: SearchRow[];
     try {
-      rows = this.db.raw
-        .prepare(
-          `SELECT
-             f.activity_id AS activity_id,
-             a.project_id AS project_id,
-             p.name AS project_name,
-             a.activity_type AS activity_type,
-             a.title AS title,
-             snippet(activities_fts, -1, '[', ']', ' ... ', 12) AS snippet,
-             a.source AS source,
-             a.created_at AS created_at
-           FROM activities_fts f
-           JOIN activities a ON a.id = f.activity_id
-           JOIN projects p ON p.id = a.project_id
-           WHERE ${clauses.join(' AND ')}
-           ORDER BY rank
-           LIMIT ?`,
-        )
-        .all(...params) as unknown as SearchRow[];
+      rows = await this.db.query<SearchRow>(
+        `SELECT
+           a.id AS activity_id,
+           a.project_id AS project_id,
+           p.name AS project_name,
+           a.activity_type AS activity_type,
+           a.title AS title,
+           ts_headline('english', coalesce(a.content, a.summary),
+             websearch_to_tsquery('english', $1), '${TS_HEADLINE_OPTIONS}') AS snippet,
+           a.source AS source,
+           a.created_at AS created_at
+         FROM activities a
+         JOIN projects p ON p.id = a.project_id
+         WHERE ${clauses.join(' AND ')}
+         ORDER BY ts_rank(a.search_vector, websearch_to_tsquery('english', $1)) DESC
+         LIMIT $${params.length}`,
+        params,
+      );
     } catch {
-      // Any residual FTS5 syntax error (e.g. a token that is still a bare
-      // operator after sanitization) degrades to an empty result rather
-      // than a thrown error reaching the client.
+      // Defense-in-depth: degrade to an empty result rather than a thrown
+      // error reaching the client for any residual query-parsing issue.
       return { hits: [], note: 'Query could not be parsed as search text.' };
     }
 

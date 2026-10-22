@@ -93,6 +93,7 @@ export interface ProjectContext {
 
 export interface MemoryStats {
   schemaVersion: number;
+  /** Host/database name only, e.g. `postgresql://db.example.supabase.co:5432/postgres` — credentials are stripped, never the raw connection string. */
   dbPath: string;
   counts: {
     projects: number;

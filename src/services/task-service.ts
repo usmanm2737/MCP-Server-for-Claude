@@ -13,7 +13,7 @@ export interface CreateTaskFromActivityInput {
 export class TaskService {
   constructor(private readonly tasks: TaskRepository) {}
 
-  createFromActivity(input: CreateTaskFromActivityInput): Task {
+  async createFromActivity(input: CreateTaskFromActivityInput): Promise<Task> {
     return this.tasks.create({
       projectId: input.projectId,
       activityId: input.activityId,
@@ -24,14 +24,18 @@ export class TaskService {
     });
   }
 
-  listOpenAndBlocked(projectId: string, limit: number): { open: Task[]; blocked: Task[] } {
-    return {
-      open: this.tasks.listByStatuses(projectId, ['open', 'in_progress'], limit),
-      blocked: this.tasks.listByStatuses(projectId, ['blocked'], limit),
-    };
+  async listOpenAndBlocked(
+    projectId: string,
+    limit: number,
+  ): Promise<{ open: Task[]; blocked: Task[] }> {
+    const [open, blocked] = await Promise.all([
+      this.tasks.listByStatuses(projectId, ['open', 'in_progress'], limit),
+      this.tasks.listByStatuses(projectId, ['blocked'], limit),
+    ]);
+    return { open, blocked };
   }
 
-  countAll(): number {
+  async countAll(): Promise<number> {
     return this.tasks.countAll();
   }
 }

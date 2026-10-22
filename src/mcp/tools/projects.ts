@@ -21,8 +21,8 @@ export function registerProjectTools(server: McpServer, container: Container): v
       inputSchema: getProjectContextInputSchema,
     },
     (input) =>
-      runTool('get_project_context', () => {
-        const context = container.contextService.getProjectContext(input);
+      runTool('get_project_context', async () => {
+        const context = await container.contextService.getProjectContext(input);
         return toolOk({ ...context });
       }),
   );
@@ -38,8 +38,8 @@ export function registerProjectTools(server: McpServer, container: Container): v
       inputSchema: updateProjectStateInputSchema,
     },
     (input) =>
-      runTool('update_project_state', () => {
-        const project = container.projectService.updateProjectState(input);
+      runTool('update_project_state', async () => {
+        const project = await container.projectService.updateProjectState(input);
         return toolOk({ ...project });
       }),
   );
@@ -54,8 +54,8 @@ export function registerProjectTools(server: McpServer, container: Container): v
       inputSchema: getMemoryStatsInputSchema,
     },
     () =>
-      runTool('get_memory_stats', () => {
-        const stats = container.projectService.getMemoryStats();
+      runTool('get_memory_stats', async () => {
+        const stats = await container.projectService.getMemoryStats();
         return toolOk({ ...stats });
       }),
   );

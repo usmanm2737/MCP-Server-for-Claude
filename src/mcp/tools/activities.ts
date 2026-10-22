@@ -35,8 +35,8 @@ export function registerActivityTools(server: McpServer, container: Container): 
       inputSchema: saveActivityInputSchema,
     },
     (input) =>
-      runTool('save_activity', () => {
-        const { activity, duplicate } = container.activityService.saveActivity(input);
+      runTool('save_activity', async () => {
+        const { activity, duplicate } = await container.activityService.saveActivity(input);
         return toolOk({
           id: activity.id,
           projectId: activity.projectId,
@@ -57,8 +57,8 @@ export function registerActivityTools(server: McpServer, container: Container): 
       inputSchema: searchActivityInputSchema,
     },
     (input) =>
-      runTool('search_activity', () => {
-        const { hits, note } = container.searchService.search(input);
+      runTool('search_activity', async () => {
+        const { hits, note } = await container.searchService.search(input);
         return toolOk({ results: hits, count: hits.length, ...(note ? { note } : {}) });
       }),
   );
@@ -72,8 +72,8 @@ export function registerActivityTools(server: McpServer, container: Container): 
       inputSchema: getRecentActivityInputSchema,
     },
     (input) =>
-      runTool('get_recent_activity', () => {
-        const { activities, note } = container.activityService.getRecentActivity(input);
+      runTool('get_recent_activity', async () => {
+        const { activities, note } = await container.activityService.getRecentActivity(input);
         return toolOk({ activities, count: activities.length, ...(note ? { note } : {}) });
       }),
   );
@@ -88,8 +88,8 @@ export function registerActivityTools(server: McpServer, container: Container): 
       inputSchema: deleteActivityInputSchema,
     },
     (input) =>
-      runTool('delete_activity', () => {
-        const { id, title } = container.activityService.deleteActivity(input);
+      runTool('delete_activity', async () => {
+        const { id, title } = await container.activityService.deleteActivity(input);
         return toolOk({ deleted: true, id, title });
       }),
   );

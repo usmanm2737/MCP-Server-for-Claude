@@ -19,8 +19,8 @@ export function registerImportTools(server: McpServer, container: Container): vo
       inputSchema: importConversationInputSchema,
     },
     (input) =>
-      runTool('import_conversation', () => {
-        const result = container.importService.importConversation(input);
+      runTool('import_conversation', async () => {
+        const result = await container.importService.importConversation(input);
         return toolOk({ ...result });
       }),
   );

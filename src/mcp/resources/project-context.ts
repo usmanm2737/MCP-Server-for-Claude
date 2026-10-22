@@ -16,8 +16,8 @@ function firstValue(v: string | string[] | undefined): string {
 
 export function registerProjectContextResource(server: McpServer, container: Container): void {
   const template = new ResourceTemplate(PROJECT_CONTEXT_URI_TEMPLATE, {
-    list: () => ({
-      resources: container.contextService.listProjectNames(100).map((name) => ({
+    list: async () => ({
+      resources: (await container.contextService.listProjectNames(100)).map((name) => ({
         uri: `memory://projects/${encodeURIComponent(name)}/context`,
         name,
         title: `${name} — project context`,
@@ -36,12 +36,12 @@ export function registerProjectContextResource(server: McpServer, container: Con
         'Saved state, recent activity, decisions, and open/blocked tasks for one project, addressed by name.',
       mimeType: 'application/json',
     },
-    (uri, variables) => {
+    async (uri, variables) => {
       const projectName = decodeURIComponent(firstValue(variables.projectName));
       // Lets NotFoundError (unknown project) propagate: the SDK turns a thrown
       // error from a resource handler into a JSON-RPC error response, which is
       // the correct signal here — unlike tools, resources have no `isError` result shape.
-      const context = container.contextService.getProjectContext({ projectName });
+      const context = await container.contextService.getProjectContext({ projectName });
       return {
         contents: [
           {

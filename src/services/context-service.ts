@@ -16,22 +16,26 @@ export class ContextService {
   ) {}
 
   /** Project names, most recently updated first — backs the project-context resource listing. */
-  listProjectNames(limit: number): string[] {
+  async listProjectNames(limit: number): Promise<string[]> {
     return this.projects.listNames(limit);
   }
 
   /** Throws `NotFoundError` for an unknown project — reading context never auto-creates one. */
-  getProjectContext(input: GetProjectContextInput): ProjectContext {
-    const project = this.projects.requireByName(input.projectName);
+  async getProjectContext(input: GetProjectContextInput): Promise<ProjectContext> {
+    const project = await this.projects.requireByName(input.projectName);
     const maxItems = input.maxItems ?? DEFAULT_MAX_ITEMS;
 
-    const recentActivities = this.activities
-      .listRecent({ projectId: project.id, limit: maxItems })
-      // Bounded summaries, not an unlimited transcript: drop the full `content` body here.
-      .map((activity) => ({ ...activity, content: null }));
+    const [recentActivitiesRaw, decisions, { open, blocked }] = await Promise.all([
+      this.activities.listRecent({ projectId: project.id, limit: maxItems }),
+      this.decisions.listRelevant(project.id, maxItems),
+      this.tasks.listOpenAndBlocked(project.id, maxItems),
+    ]);
 
-    const decisions = this.decisions.listRelevant(project.id, maxItems);
-    const { open, blocked } = this.tasks.listOpenAndBlocked(project.id, maxItems);
+    // Bounded summaries, not an unlimited transcript: drop the full `content` body here.
+    const recentActivities = recentActivitiesRaw.map((activity) => ({
+      ...activity,
+      content: null,
+    }));
 
     return {
       project: {

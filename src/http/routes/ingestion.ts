@@ -1,4 +1,4 @@
-import type { Router, Request, Response, NextFunction } from 'express';
+import type { Router, Request, Response } from 'express';
 
 import type { Container } from '../../container.js';
 import {
@@ -13,34 +13,25 @@ import {
  * this milestone) would call these same two routes.
  */
 export function registerIngestionRoutes(router: Router, container: Container): void {
-  router.post('/ingest/conversation', (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const input = httpIngestConversationInputSchema.parse(req.body);
-      const result = container.importService.importConversation(input);
-      res.status(201).json(result);
-    } catch (err) {
-      next(err);
-    }
+  // Express 5's router forwards a rejected async handler to the error middleware
+  // automatically (no manual try/catch + next(err) needed) — see router/lib/layer.js.
+  router.post('/ingest/conversation', async (req: Request, res: Response) => {
+    const input = httpIngestConversationInputSchema.parse(req.body);
+    const result = await container.importService.importConversation(input);
+    res.status(201).json(result);
   });
 
-  router.post(
-    '/projects/:projectId/activities',
-    (req: Request, res: Response, next: NextFunction) => {
-      try {
-        const input = httpCreateActivityInputSchema.parse(req.body);
-        const { activity, duplicate } = container.activityService.saveActivityForProjectId(
-          req.params.projectId as string,
-          input,
-        );
-        res.status(duplicate ? 200 : 201).json({
-          id: activity.id,
-          projectId: activity.projectId,
-          createdAt: activity.createdAt,
-          duplicate,
-        });
-      } catch (err) {
-        next(err);
-      }
-    },
-  );
+  router.post('/projects/:projectId/activities', async (req: Request, res: Response) => {
+    const input = httpCreateActivityInputSchema.parse(req.body);
+    const { activity, duplicate } = await container.activityService.saveActivityForProjectId(
+      req.params.projectId as string,
+      input,
+    );
+    res.status(duplicate ? 200 : 201).json({
+      id: activity.id,
+      projectId: activity.projectId,
+      createdAt: activity.createdAt,
+      duplicate,
+    });
+  });
 }

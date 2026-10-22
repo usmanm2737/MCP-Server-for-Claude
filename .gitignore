@@ -9,14 +9,8 @@ npm-debug.log*
 .env.*
 !.env.example
 
-# Local data (database files, imports, backups)
-data/
-*.sqlite
-*.sqlite3
-*.db
-*.db-journal
-*.db-wal
-*.db-shm
+# Local data (pg_dump backups — see README "Backups")
+*.sql
 
 # Local MCP client config (may contain machine-specific paths)
 .mcp.json

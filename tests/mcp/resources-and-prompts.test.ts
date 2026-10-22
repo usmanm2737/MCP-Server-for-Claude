@@ -14,7 +14,7 @@ afterEach(async () => {
 describe('MCP server: project-context resource', () => {
   it('lists a resource entry for each known project', async () => {
     session = await connectTestClient();
-    session.container.activityService.saveActivity({
+    await session.container.activityService.saveActivity({
       projectName: 'Alpha',
       activityType: 'note',
       title: 'x',
@@ -30,7 +30,7 @@ describe('MCP server: project-context resource', () => {
 
   it('reads back the same context as the get_project_context tool', async () => {
     session = await connectTestClient();
-    session.container.projectService.updateProjectState({
+    await session.container.projectService.updateProjectState({
       projectName: 'Alpha',
       currentState: 'building',
       nextSteps: 'ship it',

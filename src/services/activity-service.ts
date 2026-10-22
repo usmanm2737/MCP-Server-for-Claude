@@ -44,35 +44,38 @@ export class ActivityService {
     private readonly maxResults: number,
   ) {}
 
-  saveActivity(input: SaveActivityInput): SaveActivityResult {
-    return this.db.transaction(() => {
-      const project = this.projects.getOrCreate(input.projectName);
+  async saveActivity(input: SaveActivityInput): Promise<SaveActivityResult> {
+    return this.db.transaction(async () => {
+      const project = await this.projects.getOrCreate(input.projectName);
       return this.persistActivityForProject(project, input);
     });
   }
 
   /** Same persistence/dedup/fan-out logic as `saveActivity`, for a caller that already has a `Project` (e.g. the HTTP route resolving by id, which must 404 rather than auto-create). */
-  saveActivityForProject(project: Project, input: SaveActivityForProjectInput): SaveActivityResult {
+  async saveActivityForProject(
+    project: Project,
+    input: SaveActivityForProjectInput,
+  ): Promise<SaveActivityResult> {
     return this.db.transaction(() => this.persistActivityForProject(project, input));
   }
 
   /** As `saveActivityForProject`, resolving the project by id first — throws `NotFoundError` for an unknown id rather than creating one. Used by the HTTP `POST /api/v1/projects/:projectId/activities` route. */
-  saveActivityForProjectId(
+  async saveActivityForProjectId(
     projectId: string,
     input: SaveActivityForProjectInput,
-  ): SaveActivityResult {
-    const project = this.projects.requireById(projectId);
+  ): Promise<SaveActivityResult> {
+    const project = await this.projects.requireById(projectId);
     return this.saveActivityForProject(project, input);
   }
 
-  private persistActivityForProject(
+  private async persistActivityForProject(
     project: Project,
     input: SaveActivityForProjectInput,
-  ): SaveActivityResult {
+  ): Promise<SaveActivityResult> {
     const source = input.source ?? DEFAULT_SOURCE;
 
     const session = input.sessionId
-      ? this.sessions.getOrCreateByExternalId({
+      ? await this.sessions.getOrCreateByExternalId({
           projectId: project.id,
           source,
           externalSessionId: input.sessionId,
@@ -87,12 +90,12 @@ export class ActivityService {
       input.content,
     ]);
 
-    const existing = this.activities.findByContentHash(project.id, hash);
+    const existing = await this.activities.findByContentHash(project.id, hash);
     if (existing) {
       return { activity: existing, duplicate: true };
     }
 
-    const activity = this.activities.create({
+    const activity = await this.activities.create({
       projectId: project.id,
       sessionId: session?.id ?? null,
       source,
@@ -107,14 +110,14 @@ export class ActivityService {
 
     const typeKey = input.activityType.trim().toLowerCase();
     if (typeKey === DECISION_ACTIVITY_TYPE) {
-      this.decisions.create({
+      await this.decisions.create({
         projectId: project.id,
         activityId: activity.id,
         decision: input.title,
         rationale: input.content ?? input.summary,
       });
     } else if (TASK_ACTIVITY_TYPES.has(typeKey)) {
-      this.tasks.createFromActivity({
+      await this.tasks.createFromActivity({
         projectId: project.id,
         activityId: activity.id,
         title: input.title,
@@ -126,17 +129,19 @@ export class ActivityService {
     return { activity, duplicate: false };
   }
 
-  getRecentActivity(input: GetRecentActivityInput): { activities: Activity[]; note?: string } {
+  async getRecentActivity(
+    input: GetRecentActivityInput,
+  ): Promise<{ activities: Activity[]; note?: string }> {
     let projectId: string | undefined;
     if (input.projectName) {
-      const project = this.projects.findByName(input.projectName);
+      const project = await this.projects.findByName(input.projectName);
       if (!project) {
         return { activities: [], note: `No project named "${input.projectName}" exists.` };
       }
       projectId = project.id;
     }
     const limit = Math.min(input.limit ?? 20, this.maxResults);
-    const activities = this.activities.listRecent({
+    const activities = await this.activities.listRecent({
       projectId,
       activityType: input.activityType,
       limit,
@@ -144,12 +149,12 @@ export class ActivityService {
     return { activities };
   }
 
-  deleteActivity(input: DeleteActivityInput): { id: string; title: string } {
-    const existing = this.activities.findById(input.activityId);
+  async deleteActivity(input: DeleteActivityInput): Promise<{ id: string; title: string }> {
+    const existing = await this.activities.findById(input.activityId);
     if (!existing) {
       throw new NotFoundError('Activity', input.activityId);
     }
-    this.activities.delete(input.activityId);
+    await this.activities.delete(input.activityId);
     return { id: existing.id, title: existing.title };
   }
 }

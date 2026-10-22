@@ -1,4 +1,4 @@
-import type { Router, Request, Response, NextFunction } from 'express';
+import type { Router, Request, Response } from 'express';
 
 import type { Container } from '../../container.js';
 
@@ -9,13 +9,11 @@ function parseLimit(raw: unknown, fallback: number, max: number): number {
 }
 
 export function registerProjectsRoute(router: Router, container: Container): void {
-  router.get('/projects', (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const limit = parseLimit(req.query.limit, 50, 200);
-      const projects = container.projectService.listProjects(limit);
-      res.status(200).json({ projects, count: projects.length });
-    } catch (err) {
-      next(err);
-    }
+  // Express 5's router forwards a rejected async handler to the error middleware
+  // automatically (no manual try/catch + next(err) needed) — see router/lib/layer.js.
+  router.get('/projects', async (req: Request, res: Response) => {
+    const limit = parseLimit(req.query.limit, 50, 200);
+    const projects = await container.projectService.listProjects(limit);
+    res.status(200).json({ projects, count: projects.length });
   });
 }

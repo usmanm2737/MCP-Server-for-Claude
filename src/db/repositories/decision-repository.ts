@@ -37,22 +37,19 @@ export interface CreateDecisionInput {
 export class DecisionRepository {
   constructor(private readonly db: MemoryDatabase) {}
 
-  findById(id: string): Decision | null {
-    const row = this.db.raw.prepare('SELECT * FROM decisions WHERE id = ?').get(id) as unknown as
-      DecisionRow | undefined;
+  async findById(id: string): Promise<Decision | null> {
+    const row = await this.db.queryOne<DecisionRow>('SELECT * FROM decisions WHERE id = $1', [id]);
     return row ? mapRow(row) : null;
   }
 
-  create(input: CreateDecisionInput): Decision {
+  async create(input: CreateDecisionInput): Promise<Decision> {
     const id = newId();
     const ts = nowIso();
     const status = input.status ?? 'active';
-    this.db.raw
-      .prepare(
-        `INSERT INTO decisions (id, project_id, activity_id, decision, rationale, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
+    await this.db.query(
+      `INSERT INTO decisions (id, project_id, activity_id, decision, rationale, status, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
         id,
         input.projectId,
         input.activityId ?? null,
@@ -61,7 +58,8 @@ export class DecisionRepository {
         status,
         ts,
         ts,
-      );
+      ],
+    );
     return {
       id,
       projectId: input.projectId,
@@ -75,22 +73,19 @@ export class DecisionRepository {
   }
 
   /** Recent, non-reverted decisions for a project — used by project context. */
-  listRelevant(projectId: string, limit: number): Decision[] {
-    const rows = this.db.raw
-      .prepare(
-        `SELECT * FROM decisions
-         WHERE project_id = ? AND status != 'reverted'
-         ORDER BY created_at DESC, rowid DESC
-         LIMIT ?`,
-      )
-      .all(projectId, limit) as unknown as DecisionRow[];
+  async listRelevant(projectId: string, limit: number): Promise<Decision[]> {
+    const rows = await this.db.query<DecisionRow>(
+      `SELECT * FROM decisions
+       WHERE project_id = $1 AND status != 'reverted'
+       ORDER BY created_at DESC, seq DESC
+       LIMIT $2`,
+      [projectId, limit],
+    );
     return rows.map(mapRow);
   }
 
-  countAll(): number {
-    const row = this.db.raw.prepare('SELECT COUNT(*) AS n FROM decisions').get() as unknown as {
-      n: number;
-    };
-    return row.n;
+  async countAll(): Promise<number> {
+    const row = await this.db.queryOne<{ n: number }>('SELECT COUNT(*)::int AS n FROM decisions');
+    return row?.n ?? 0;
   }
 }

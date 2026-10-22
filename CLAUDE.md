@@ -13,6 +13,12 @@ Likewise, "retrieve context" only happens when you call `get_project_context` or
 `memory://projects/{projectName}/context` resource. Verify this for yourself the first time: save
 something, then actually check (via `get_recent_activity` or `search_activity`) that it is there.
 
+**If this server is reachable remotely (see README "Multiple Claude profiles at once"), its memory may
+be shared with other connected profiles/sessions, not private to this one.** There's no per-user
+isolation — anything you save here could be visible to, and anything shown to you could have been saved
+by, a different person or profile using the same server. Keep that in mind for what's appropriate to
+save (see "never save secrets" below, which applies even more here).
+
 ## At the start of a session
 
 If you are picking up work on a project that might have prior history in this memory store:
@@ -110,7 +116,8 @@ and "Future browser integration" for why, and what would need to change).
 
 ## Registering the server
 
-Build it first (from the repository root):
+Needs a reachable Postgres database first — set `DATABASE_URL` in `.env` (see README "Database:
+Supabase/Postgres setup"; there is no local-file fallback). Then build (from the repository root):
 
 ```bash
 npm install
@@ -127,8 +134,7 @@ claude mcp add claude-activity-memory --scope project -- node /absolute/path/to/
 Or add it to this project's `.mcp.json` by copying `.mcp.json.example` to `.mcp.json` and filling in your
 own absolute paths (see that file). **Do not commit `.mcp.json`** with a real path on your machine or any
 secret in it — it's gitignored for exactly that reason; `.mcp.json.example` is the template that is safe
-to commit. If you only want a custom database location, set `CLAUDE_MEMORY_DB_PATH` in the `env` block;
-otherwise the server picks a sensible per-user default (see README).
+to commit.
 
 After registering, restart/reconnect your Claude Code session and confirm the tools actually appear
 (e.g. via `/mcp` or by asking the connected assistant to call `get_memory_stats`) before relying on any of

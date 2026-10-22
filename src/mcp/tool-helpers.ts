@@ -25,14 +25,17 @@ export function toolError(message: string): ToolTextResult {
 }
 
 /**
- * Runs a tool handler body, converting any thrown error into a
+ * Runs a tool handler body, converting any thrown/rejected error into a
  * `isError: true` tool result instead of letting it reach the transport —
  * known `AppError`s surface their message verbatim, anything else collapses
  * to a generic message so internals never leak to the client.
  */
-export function runTool(toolName: string, fn: () => ToolTextResult): ToolTextResult {
+export async function runTool(
+  toolName: string,
+  fn: () => Promise<ToolTextResult> | ToolTextResult,
+): Promise<ToolTextResult> {
   try {
-    return fn();
+    return await fn();
   } catch (err) {
     if (!isAppError(err)) {
       logger.error('tool handler threw an unexpected error', {

@@ -3,8 +3,8 @@
  * Remote MCP entrypoint: serves the *same* 8 tools/resource/prompt as the
  * stdio server (`src/index.ts`), but over the MCP "Streamable HTTP"
  * transport, so a remote client — e.g. claude.ai's web app, via a tunnel
- * like ngrok during testing, or any other MCP client that speaks HTTP
- * instead of spawning a local process — can connect to it.
+ * like ngrok during testing, or a real deployment (Render) in production —
+ * can connect to it.
  *
  * Deliberately a separate process/entrypoint from both `src/index.ts`
  * (stdio) and `src/http/index.ts` (the REST ingestion API): starting this
@@ -18,7 +18,7 @@ import { buildContainer } from '../container.js';
 import { logger } from '../utils/logging.js';
 import { createRemoteMcpApp } from './app.js';
 
-function main(): void {
+async function main(): Promise<void> {
   const config = loadConfig();
 
   if (!config.remoteMcp.enabled) {
@@ -31,7 +31,7 @@ function main(): void {
     return;
   }
 
-  const container = buildContainer(config);
+  const container = await buildContainer(config);
   const app = createRemoteMcpApp(container, config);
 
   const server = app.listen(config.remoteMcp.port, config.remoteMcp.host, () => {
@@ -44,12 +44,19 @@ function main(): void {
 
   const shutdown = (): void => {
     server.close(() => {
-      container.db.close();
-      process.exit(0);
+      container.db
+        .close()
+        .catch((err: unknown) =>
+          logger.error('error closing database pool', { error: String(err) }),
+        )
+        .finally(() => process.exit(0));
     });
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 }
 
-main();
+main().catch((err: unknown) => {
+  logger.error('fatal startup error', { error: String(err) });
+  process.exitCode = 1;
+});
