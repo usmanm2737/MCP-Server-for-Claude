@@ -27,6 +27,8 @@ export function createRemoteMcpApp(container: Container, config: AppConfig): Exp
   }
 
   function isAuthorized(req: Request): boolean {
+    // DANGEROUS testing-only opt-out — see AppConfig['remoteMcp']['disableAuthDangerously'].
+    if (config.remoteMcp.disableAuthDangerously) return true;
     const header = req.header('authorization') ?? '';
     const [scheme, presented] = header.split(' ');
     return scheme === 'Bearer' && presented === token;

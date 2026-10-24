@@ -61,6 +61,15 @@ export interface AppConfig {
     readonly allowedHosts: readonly string[];
     /** Hostnames (no port) a request's Origin header is allowed to present, when present at all. */
     readonly allowedOrigins: readonly string[];
+    /**
+     * DANGEROUS, deliberately off by default and never set in `.env`: when true, every `/mcp`
+     * request is treated as authorized regardless of its bearer token (or lack of one). Exists
+     * only because some MCP clients' custom-connector UIs don't yet offer a way to attach a
+     * static credential, only OAuth or no-auth-at-all — this is a temporary, explicit,
+     * loudly-logged opt-out for a short manual test session, not a supported configuration.
+     * Pass it inline on the command that starts the server; do not leave it set.
+     */
+    readonly disableAuthDangerously: boolean;
   };
 }
 
@@ -137,6 +146,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       token: remoteMcpToken,
       allowedHosts: splitList(env.CLAUDE_MEMORY_REMOTE_MCP_ALLOWED_HOSTS),
       allowedOrigins: splitList(env.CLAUDE_MEMORY_REMOTE_MCP_ALLOWED_ORIGINS),
+      disableAuthDangerously: readBool('CLAUDE_MEMORY_REMOTE_MCP_DISABLE_AUTH_DANGEROUSLY', false),
     },
   };
 }

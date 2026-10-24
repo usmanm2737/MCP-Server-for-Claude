@@ -31,6 +31,15 @@ function main(): void {
     return;
   }
 
+  if (config.remoteMcp.disableAuthDangerously) {
+    logger.warn(
+      '*** CLAUDE_MEMORY_REMOTE_MCP_DISABLE_AUTH_DANGEROUSLY=true — every request to /mcp is ' +
+        'being accepted WITHOUT checking the bearer token. Anyone with this URL (e.g. the ngrok ' +
+        'tunnel address) can read, write, and delete your project memory. This is meant for a ' +
+        'short manual test only — stop this process and restart without the flag when done. ***',
+    );
+  }
+
   const container = buildContainer(config);
   const app = createRemoteMcpApp(container, config);
 
