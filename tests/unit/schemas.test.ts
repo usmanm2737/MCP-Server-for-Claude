@@ -4,6 +4,8 @@ import {
   deleteActivityInputSchema,
   importConversationInputSchema,
   importedConversationV1Schema,
+  savePromptInputSchema,
+  saveResourceInputSchema,
 } from '../../src/domain/schemas.js';
 
 describe('importConversationInputSchema', () => {
@@ -46,6 +48,41 @@ describe('deleteActivityInputSchema', () => {
       false,
     );
     expect(deleteActivityInputSchema.safeParse({ activityId: 'a1' }).success).toBe(false);
+  });
+});
+
+describe('savePromptInputSchema', () => {
+  it('requires name and a non-empty template', () => {
+    expect(savePromptInputSchema.safeParse({ name: 'x', template: 'do the thing' }).success).toBe(
+      true,
+    );
+    expect(savePromptInputSchema.safeParse({ template: 'do the thing' }).success).toBe(false);
+    expect(savePromptInputSchema.safeParse({ name: 'x', template: '' }).success).toBe(false);
+    expect(savePromptInputSchema.safeParse({ name: 'x', template: '   ' }).success).toBe(false);
+  });
+
+  it('title and description are optional', () => {
+    const result = savePromptInputSchema.safeParse({ name: 'x', template: 'do the thing' });
+    expect(result.success).toBe(true);
+  });
+});
+
+describe('saveResourceInputSchema', () => {
+  it('requires name and non-empty content', () => {
+    expect(saveResourceInputSchema.safeParse({ name: 'x', content: 'some content' }).success).toBe(
+      true,
+    );
+    expect(saveResourceInputSchema.safeParse({ name: 'x', content: '' }).success).toBe(false);
+    expect(saveResourceInputSchema.safeParse({ content: 'some content' }).success).toBe(false);
+  });
+
+  it('accepts an explicit mimeType', () => {
+    const result = saveResourceInputSchema.safeParse({
+      name: 'x',
+      content: '{}',
+      mimeType: 'application/json',
+    });
+    expect(result.success).toBe(true);
   });
 });
 

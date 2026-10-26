@@ -42,6 +42,8 @@ async function runChecks(client: Client): Promise<void> {
     'import_conversation',
     'delete_activity',
     'get_memory_stats',
+    'save_prompt',
+    'save_resource',
   ];
   const toolNames = new Set(tools.map((t) => t.name));
   for (const expected of expectedTools) {

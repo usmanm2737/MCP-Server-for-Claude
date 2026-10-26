@@ -12,7 +12,7 @@ afterEach(async () => {
 });
 
 describe('MCP server: tool registration', () => {
-  it('lists all 8 documented tools', async () => {
+  it('lists all 10 documented tools', async () => {
     session = await connectTestClient();
     const { tools } = await session.client.listTools();
     const names = tools.map((t) => t.name).sort();
@@ -24,6 +24,8 @@ describe('MCP server: tool registration', () => {
         'get_recent_activity',
         'import_conversation',
         'save_activity',
+        'save_prompt',
+        'save_resource',
         'search_activity',
         'update_project_state',
       ].sort(),

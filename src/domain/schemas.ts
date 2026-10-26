@@ -87,6 +87,30 @@ export const getMemoryStatsInputSchema = z.object({});
 export type GetMemoryStatsInput = z.infer<typeof getMemoryStatsInputSchema>;
 
 // ---------------------------------------------------------------------------
+// Custom (user-saved) prompts and resources
+// ---------------------------------------------------------------------------
+
+/** Display name as given by the caller; slugified server-side into the stored, unique `name`/URI segment. */
+const customDisplayNameSchema = z.string().trim().min(1).max(150);
+
+export const savePromptInputSchema = z.object({
+  name: customDisplayNameSchema,
+  title: z.string().trim().min(1).max(200).optional(),
+  description: z.string().trim().min(1).max(1000).optional(),
+  template: z.string().trim().min(1).max(50_000),
+});
+export type SavePromptInput = z.infer<typeof savePromptInputSchema>;
+
+export const saveResourceInputSchema = z.object({
+  name: customDisplayNameSchema,
+  title: z.string().trim().min(1).max(200).optional(),
+  description: z.string().trim().min(1).max(1000).optional(),
+  content: z.string().min(1).max(500_000),
+  mimeType: z.string().trim().min(1).max(100).optional(),
+});
+export type SaveResourceInput = z.infer<typeof saveResourceInputSchema>;
+
+// ---------------------------------------------------------------------------
 // HTTP ingestion API bodies
 //
 // Deliberately distinct from the MCP tool schemas above: the HTTP routes

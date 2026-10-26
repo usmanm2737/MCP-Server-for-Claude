@@ -59,7 +59,7 @@ describe('remote MCP HTTP: full protocol round-trip over a real port', () => {
     }
   });
 
-  it('lists all 8 tools and completes a save/search round-trip over a real session', async () => {
+  it('lists all 10 tools and completes a save/search round-trip over a real session', async () => {
     const { app } = buildApp();
     const server = app.listen(0, '127.0.0.1');
     activeServer = server;
@@ -77,7 +77,7 @@ describe('remote MCP HTTP: full protocol round-trip over a real port', () => {
     expect(sessionIdAfterConnect).toBeTruthy();
 
     const { tools } = await client.listTools();
-    expect(tools).toHaveLength(8);
+    expect(tools).toHaveLength(10);
 
     const saveResult = await client.callTool({
       name: 'save_activity',

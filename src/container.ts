@@ -6,12 +6,15 @@ import { SessionRepository } from './db/repositories/session-repository.js';
 import { ActivityRepository } from './db/repositories/activity-repository.js';
 import { DecisionRepository } from './db/repositories/decision-repository.js';
 import { TaskRepository } from './db/repositories/task-repository.js';
+import { CustomPromptRepository } from './db/repositories/custom-prompt-repository.js';
+import { CustomResourceRepository } from './db/repositories/custom-resource-repository.js';
 import { ActivityService } from './services/activity-service.js';
 import { ProjectService } from './services/project-service.js';
 import { ContextService } from './services/context-service.js';
 import { SearchService } from './services/search-service.js';
 import { ImportService } from './services/import-service.js';
 import { TaskService } from './services/task-service.js';
+import { CustomContentService } from './services/custom-content-service.js';
 
 /**
  * Composition root: wires repositories and services over one open database.
@@ -26,6 +29,7 @@ export interface Container {
   contextService: ContextService;
   searchService: SearchService;
   importService: ImportService;
+  customContentService: CustomContentService;
 }
 
 export function buildContainerFromDb(db: MemoryDatabase, config: AppConfig): Container {
@@ -35,6 +39,9 @@ export function buildContainerFromDb(db: MemoryDatabase, config: AppConfig): Con
   const decisions = new DecisionRepository(db);
   const taskRepo = new TaskRepository(db);
   const taskService = new TaskService(taskRepo);
+  const customPrompts = new CustomPromptRepository(db);
+  const customResources = new CustomResourceRepository(db);
+  const customContentService = new CustomContentService(customPrompts, customResources);
 
   const activityService = new ActivityService(
     db,
@@ -71,6 +78,7 @@ export function buildContainerFromDb(db: MemoryDatabase, config: AppConfig): Con
     contextService,
     searchService,
     importService,
+    customContentService,
   };
 }
 

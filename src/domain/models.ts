@@ -91,6 +91,27 @@ export interface ProjectContext {
   blockedTasks: Task[];
 }
 
+export interface CustomPrompt {
+  id: string;
+  name: string;
+  title: string | null;
+  description: string | null;
+  template: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CustomResource {
+  id: string;
+  name: string;
+  title: string | null;
+  description: string | null;
+  content: string;
+  mimeType: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface MemoryStats {
   schemaVersion: number;
   dbPath: string;

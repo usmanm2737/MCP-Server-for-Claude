@@ -18,6 +18,7 @@ anything to be saved or retrieved. See [Known limitations](#known-limitations).
 - [Claude Code integration](#claude-code-integration)
 - [Verifying with the MCP Inspector](#verifying-with-the-mcp-inspector)
 - [Using the tools](#using-the-tools)
+- [Custom (user-saved) prompts and resources](#custom-user-saved-prompts-and-resources)
 - [The optional HTTP ingestion API](#the-optional-http-ingestion-api)
 - [Testing with claude.ai web via a tunnel (ngrok)](#testing-with-claudeai-web-via-a-tunnel-ngrok)
 - [Database path and backups](#database-path-and-backups)
@@ -69,8 +70,10 @@ like claude.ai web that can't spawn a local process). Starting any one of them n
 
 Layers, top to bottom:
 
-- **MCP transport** (`src/mcp/`): registers 8 tools, 1 resource template, 1 prompt on an `McpServer` from
-  `@modelcontextprotocol/server` (the current stable v2 SDK line — see [`src/mcp/server.ts`](src/mcp/server.ts)).
+- **MCP transport** (`src/mcp/`): registers 10 tools, 1 resource template, and 1 prompt on an `McpServer`
+  from `@modelcontextprotocol/server` (the current stable v2 SDK line — see
+  [`src/mcp/server.ts`](src/mcp/server.ts)), plus whatever prompts/resources have been saved at runtime via
+  `save_prompt`/`save_resource` — see [Custom (user-saved) prompts and resources](#custom-user-saved-prompts-and-resources).
   Tool handlers call services; they never touch SQL directly.
 - **Application services** (`src/services/`): the actual logic — dedup, fan-out from an activity into the
   decisions/tasks tables, search query building, import orchestration.
@@ -102,7 +105,8 @@ pass and avoids fighting an ORM's virtual-table support. See `src/db/repositorie
 
 ### How `save_activity` populates decisions and tasks
 
-There are exactly 8 MCP tools — no separate `create_decision` or `create_task` tool. Instead,
+There are 10 MCP tools, 8 of them fixed and no separate `create_decision` or `create_task` tool among
+them. Instead,
 `save_activity`'s `activityType` field drives it: `"decision"` also writes a row to the decisions table;
 `"task"` or `"blocker"` also writes a row to the tasks table (`"blocker"` as status `blocked`). This is
 documented for the connected client in [`CLAUDE.md`](CLAUDE.md) and in each tool's own description (so a
@@ -211,7 +215,7 @@ npm run build
 npx @modelcontextprotocol/inspector node dist/index.js
 ```
 
-This opens a local web UI where you can call each of the 8 tools with example arguments, read the
+This opens a local web UI where you can call each of the 10 tools with example arguments, read the
 `memory://projects/{projectName}/context` resource, and fetch the `resume_project` prompt — useful for
 confirming the server behaves as documented before wiring it into a client.
 
@@ -225,7 +229,7 @@ npm run build
 npm run verify-setup
 ```
 
-This spawns the real built server over stdio (the same way Claude Code does), confirms all 8 tools and
+This spawns the real built server over stdio (the same way Claude Code does), confirms all 10 tools and
 the prompt are registered, checks the FTS5 index's integrity, and round-trips one self-cleaning marker
 activity through save → search → delete against **your actual configured database** — then removes the
 marker. It leaves nothing behind either way (on failure, it still deletes the marker it created before
@@ -233,8 +237,8 @@ reporting the error). Exit code is non-zero on any failure.
 
 ## Using the tools
 
-All 8 tools, their inputs, and their behavior are documented in their own descriptions (visible via
-`tools/list` from any connected client) and in [`CLAUDE.md`](CLAUDE.md#while-working). Two concrete
+All 10 tools, their inputs, and their behavior are documented in their own descriptions (visible via
+`tools/list` from any connected client) and in [`CLAUDE.md`](CLAUDE.md#while-working). Three concrete
 walkthroughs:
 
 ### Save and search an activity
@@ -277,6 +281,25 @@ This creates one activity per message (4 of them) under one new session, and rep
 `{"created": 4, "skippedDuplicates": 0, "rejected": []}`. Run the exact same call again and it reports
 `{"created": 0, "skippedDuplicates": 4}` — imports are idempotent.
 
+### Save a custom prompt or resource, then use it from a different session
+
+```jsonc
+// save_prompt
+{ "name": "Daily Standup", "template": "Summarize what changed across all projects today." }
+```
+
+```jsonc
+// save_resource
+{ "name": "API Notes", "content": "Base URL: https://example.com\nAuth: bearer token in header." }
+```
+
+Both calls persist immediately (`name` is slugified into a stable identifier — `"Daily Standup"` becomes
+`daily-standup`). Disconnect and reconnect with any client (or just open a second session) and call
+`prompts/list` / `resources/list` — `daily-standup` and `memory://custom/api-notes` are now there
+alongside the built-in `resume_project` prompt and `project-context` resource, with no code change or
+restart required. See [Custom (user-saved) prompts and resources](#custom-user-saved-prompts-and-resources)
+below for the full behavior.
+
 ### Retrieve project context in a new session
 
 In a *different* session/client connected to the same database:
@@ -289,6 +312,33 @@ In a *different* session/client connected to the same database:
 returns the project's description/state/next-steps, its recent activities (summaries only — not full
 message bodies, so this stays bounded), open/blocked tasks, and active decisions. For an unknown project
 name this returns an error result rather than silently creating an empty project.
+
+## Custom (user-saved) prompts and resources
+
+The two built-in prompt/resource (`resume_project`, `project-context`) are registered in TypeScript at
+build time. `save_prompt` and `save_resource` let a connected client define its *own* on top of that, at
+runtime, backed by the `custom_prompts`/`custom_resources` tables — no code change or rebuild needed.
+
+- **`save_prompt({ name, template, title?, description? })`** — `template` is returned verbatim as the
+  single user-role message when the prompt is invoked. v1 is flat text only: no `{{placeholder}}`
+  argument substitution (unlike the built-in `resume_project` prompt, which does take an argument).
+- **`save_resource({ name, content, title?, description?, mimeType? })`** — becomes readable at
+  `memory://custom/{name}` (`mimeType` defaults to `text/plain`).
+- In both, `name` is slugified (lowercased, non-alphanumerics collapsed to `-`) into the stable,
+  unique identifier — `"Daily Standup"` and `"daily standup"` are the same prompt. Saving again under a
+  name that already exists **updates it in place** (same identifier, new content) rather than erroring or
+  creating a duplicate.
+- Global, not per-project — a saved prompt/resource is available regardless of which project you're
+  working in, same as the two built-in ones.
+
+**When does a saved one actually show up?** `createMcpServer()` — the one function that builds the tool/
+resource/prompt set, shared by *every* entrypoint (stdio, remote HTTP) — loads every saved custom prompt
+and resource from the database and registers it, every time a new session starts. So anything saved is
+available the moment any client (the same one or a different one) next connects — including right away in
+a brand-new session opened immediately after saving. It is **not** pushed live into a session that was
+already open before the save happened; that session would need to reconnect to see it. (The one place
+this doesn't apply: a single malformed saved row — e.g. somehow a name that collides with something else
+— is logged and skipped rather than breaking registration for everything else in that session.)
 
 ## The optional HTTP ingestion API
 
@@ -346,7 +396,7 @@ future one would use (see [Roadmap](#roadmap-browser-integration-and-a-remote-se
 Claude Code connects to this server by **spawning it locally** (stdio) — a browser can't do that.
 claude.ai's web app instead needs a server reachable over **HTTPS**, speaking the actual MCP protocol
 (not the REST API above). `src/mcp-http/index.ts` is that: a third, separate, also-optional entrypoint
-that serves the exact same 8 tools/resource/prompt over the MCP "Streamable HTTP" transport. This has
+that serves the exact same tools/resources/prompts over the MCP "Streamable HTTP" transport. This has
 been tested end-to-end locally (real HTTP session, real auth, real tool calls — see
 `tests/integration/remote-mcp-http.test.ts`); the ngrok + claude.ai steps below involve claude.ai's own
 UI, which can change independently of this project, so verify the exact screen names yourself as you go.
@@ -499,7 +549,7 @@ round-trip through real tool/resource/prompt registration.
   [Roadmap](#roadmap-browser-integration-and-a-remote-service).
 - **No full-text ranking tuning.** Search uses FTS5's default `bm25` ranking with no per-field weighting.
 - **Project tagging schema exists, no tool uses it yet.** The `project_tags` table is in the schema (per
-  the original spec's "support tags for projects and activities") but none of the 8 tools currently
+  the original spec's "support tags for projects and activities") but none of the 10 tools currently
   write to it — only activity tagging (`save_activity`'s `tags` field) is wired up.
 - **No automatic secret scanning on import or save.** Nothing here detects or redacts credentials in
   content you save or import — that responsibility is on the caller (see `CLAUDE.md`).

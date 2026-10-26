@@ -29,6 +29,7 @@ export function makeTestConfig(overrides: TestConfigOverrides = {}): AppConfig {
       token: 'test-remote-mcp-token',
       allowedHosts: [],
       allowedOrigins: [],
+      disableAuthDangerously: false,
       ...remoteMcpOverrides,
     },
     ...rest,
